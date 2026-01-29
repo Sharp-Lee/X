@@ -73,11 +73,15 @@ async def on_outcome(signal: SignalRecord, outcome: Outcome) -> None:
 
 
 async def on_kline_update(kline) -> None:
-    """Handle kline update from data collector."""
+    """Handle kline update from data collector.
+
+    This is called for both raw 1m klines and aggregated klines (3m, 5m, 15m, 30m).
+    """
     if not signal_generator or not data_collector:
         return
 
-    buffer = data_collector.get_kline_buffer(kline.symbol)
+    # Get buffer for the specific timeframe of this kline
+    buffer = data_collector.get_kline_buffer(kline.symbol, kline.timeframe)
     if buffer and kline.is_closed:
         await signal_generator.process_kline(kline, buffer)
 

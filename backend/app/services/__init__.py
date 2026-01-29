@@ -5,6 +5,7 @@ from app.services.aggtrade_downloader import AggTradeDownloader, download_all_sy
 from app.services.signal_generator import SignalGenerator, LevelManager
 from app.services.position_tracker import PositionTracker, BacktestTracker
 from app.services.order_service import OrderService, OrderSide, OrderType
+from app.services.kline_aggregator import KlineAggregator, AggregationBuffer, TIMEFRAME_MINUTES
 
 __all__ = [
     "DataCollector",
@@ -17,4 +18,7 @@ __all__ = [
     "OrderService",
     "OrderSide",
     "OrderType",
+    "KlineAggregator",
+    "AggregationBuffer",
+    "TIMEFRAME_MINUTES",
 ]
