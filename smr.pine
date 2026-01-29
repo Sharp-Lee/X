@@ -1,0 +1,289 @@
+//@version=6
+strategy("MSR Retest Capture", overlay=true, calc_on_every_tick=true, use_bar_magnifier=true, fill_orders_on_standard_ohlc=true, initial_capital=50000, default_qty_type=strategy.percent_of_equity, default_qty_value=100, commission_type=strategy.commission.percent, commission_value=0.04, slippage=3, margin_long=80, margin_short=80)
+
+// === 输入参数 ===
+lookback = input.int(9, "回看周期")
+atrPeriod = input.int(9, "ATR周期")
+startDate = input.time(timestamp("2024-11-14"), "开始交易日期")
+i_maxRiskPercent = input.float(2.53, "最大风险百分比", minval=0.1, maxval=5.0, step=0.01, group="风险管理")
+i_stopLossMultiplier = input.float(4.42, "止损倍数(相对止盈)", minval=1.0, maxval=10.0, step=0.01, group="风险管理")
+i_atrMultiplier = input.float(2, "ATR倍数", minval=0.1, maxval=5.0, step=0.01, group="风险管理")
+i_statsLength = input.int(20, "统计长度", minval=5, maxval=100, step=5, group="信号统计")
+i_showStats5 = input.bool(true, "显示最近5个信号统计", group="信号统计")
+i_showStats10 = input.bool(true, "显示最近10个信号统计", group="信号统计")
+i_showStats20 = input.bool(true, "显示最近20个信号统计", group="信号统计")
+alert_enabled = input.bool(true, "启用警报", group="警报设置")
+
+// === 常量 ===
+MIN_SCORE_THRESHOLD = 1.0
+
+// === 技术指标 ===
+ema50 = ta.ema(close, 50)
+highest = ta.highest(high, lookback)
+lowest = ta.lowest(low, lookback)
+fib_618 = highest - (highest - lowest) * 0.618
+fib_500 = highest - (highest - lowest) * 0.500
+fib_382 = highest - (highest - lowest) * 0.382
+vwap = ta.vwap(close)
+atr = ta.atr(atrPeriod)
+
+// === 支撑压力位数组 ===
+var float[] resistanceLevels = array.new_float()
+var float[] supportLevels = array.new_float()
+
+// === 更新支撑压力位 ===
+updateLevels() =>
+    array.clear(resistanceLevels)
+    array.clear(supportLevels)
+
+    // 斐波那契
+    if close < fib_618
+        array.push(resistanceLevels, fib_618)
+    else
+        array.push(supportLevels, fib_618)
+    if close < fib_500
+        array.push(resistanceLevels, fib_500)
+    else
+        array.push(supportLevels, fib_500)
+    if close < fib_382
+        array.push(resistanceLevels, fib_382)
+    else
+        array.push(supportLevels, fib_382)
+
+    // VWAP
+    if close < vwap
+        array.push(resistanceLevels, vwap)
+    else
+        array.push(supportLevels, vwap)
+
+// === 获取最近支撑压力位 ===
+getNearestLevels() =>
+    float nearestResistance = high * 2
+    float nearestSupport = low * 0.5
+
+    if array.size(resistanceLevels) > 0
+        for i = 0 to array.size(resistanceLevels) - 1
+            level = array.get(resistanceLevels, i)
+            if level > close and level < nearestResistance
+                nearestResistance := level
+
+    if array.size(supportLevels) > 0
+        for i = 0 to array.size(supportLevels) - 1
+            level = array.get(supportLevels, i)
+            if level < close and level > nearestSupport
+                nearestSupport := level
+
+    [nearestSupport, nearestResistance]
+
+// === 计算支撑压力得分 ===
+calculateLevelScore(price, levels, isSupport) =>
+    score = 0.0
+    count = 0
+    if array.size(levels) > 0
+        for i = 0 to array.size(levels) - 1
+            level = array.get(levels, i)
+            dist = math.abs(price - level) / price * 100
+            if (isSupport and level < price) or (not isSupport and level > price)
+                score += 1.0 / (1.0 + dist)
+                count += 1
+    [score, count]
+
+// === 计算止损止盈 ===
+// 策略采用"宽止损窄止盈"设计：盈亏比 = 1:止损倍数（如1:4.42）
+// 需要高胜率才能盈利，适合捕捉小幅回测行情
+
+// 计算窄止盈位置（止盈距离 = ATR × ATR倍数）
+calculateNarrowTakeProfit(direction, entryPrice) =>
+    narrowDistance = atr * i_atrMultiplier
+    direction > 0 ? math.max(entryPrice - narrowDistance, low - atr) : math.min(entryPrice + narrowDistance, high + atr)
+
+// 计算宽止损位置（止损距离 = ATR × ATR倍数 × 止损倍数）
+calculateWideStopLoss(direction, entryPrice) =>
+    wideDistance = atr * i_atrMultiplier * i_stopLossMultiplier
+    direction > 0 ? entryPrice + wideDistance : entryPrice - wideDistance
+
+// === 检测再测信号 ===
+// 策略核心：当价格触及支撑/压力位并出现反转K线后，预判价格会再次测试该位置
+// - 触及支撑位 + 收阳反转 -> 做空（预判价格会再次下跌测试支撑位）
+// - 触及压力位 + 收阴反转 -> 做多（预判价格会再次上涨测试压力位）
+detectRetestSignal() =>
+    updateLevels()
+    bool willRetestSupport = false    // 预判价格将再次测试支撑位 -> 做空
+    bool willRetestResistance = false // 预判价格将再次测试压力位 -> 做多
+    [support, resistance] = getNearestLevels()
+    upTrend = close > ema50
+    downTrend = close < ema50
+
+    [supportScore, supportCount] = calculateLevelScore(close, supportLevels, true)
+    [resistanceScore, resistanceCount] = calculateLevelScore(close, resistanceLevels, false)
+
+    // 触及支撑位 + 收阳反转：预判价格会再次下跌测试支撑位 -> 做空
+    if upTrend and supportCount >= 1 and supportScore >= MIN_SCORE_THRESHOLD
+        if (low <= support or low[1] <= support) and close > open
+            willRetestSupport := true
+
+    // 触及压力位 + 收阴反转：预判价格会再次上涨测试压力位 -> 做多
+    if downTrend and resistanceCount >= 1 and resistanceScore >= MIN_SCORE_THRESHOLD
+        if (high >= resistance or high[1] >= resistance) and close < open
+            willRetestResistance := true
+
+    [willRetestSupport, willRetestResistance, support, resistance]
+
+// === 全局状态变量 ===
+var float totalProfit = 0.0
+var float peakEquity = 0.0
+var float maxDrawdown = 0.0
+var int winTrades = 0
+var int lossTrades = 0
+var float currentStopLoss = na
+var float currentTakeProfit = na
+var array<int> recentResults = array.new_int(0)
+var int currentStreak = 0
+var int prevClosedTradesCount = 0
+
+// === 获取再测信号 ===
+[willRetestSupport, willRetestResistance, currentSupport, currentResistance] = detectRetestSignal()
+
+// === 更新交易结果 ===
+if strategy.closedtrades > prevClosedTradesCount
+    lastExitComment = strategy.closedtrades.exit_comment(strategy.closedtrades - 1)
+    lastTradeProfit = strategy.closedtrades.profit(strategy.closedtrades - 1)
+
+    if lastExitComment == "Exit Long" or lastExitComment == "Exit Short"
+        if lastTradeProfit > 0
+            winTrades := winTrades + 1
+            currentStreak := currentStreak <= 0 ? 1 : currentStreak + 1
+            array.push(recentResults, 1)
+        else
+            lossTrades := lossTrades + 1
+            currentStreak := currentStreak >= 0 ? -1 : currentStreak - 1
+            array.push(recentResults, -1)
+
+        while array.size(recentResults) > i_statsLength
+            array.shift(recentResults)
+
+    prevClosedTradesCount := strategy.closedtrades
+
+// === 开仓逻辑 ===
+hasRetestSignal = willRetestSupport or willRetestResistance
+if barstate.isconfirmed and time >= startDate and strategy.position_size == 0 and hasRetestSignal
+    posSize = strategy.equity / close
+
+    // 更新统计
+    if strategy.closedtrades > 0
+        totalProfit := strategy.netprofit
+        peakEquity := math.max(peakEquity, strategy.equity)
+        maxDrawdown := math.max(maxDrawdown, peakEquity - strategy.equity)
+
+    // 再测捕捉策略：
+    // - 触及支撑位+收阳反转 -> 做空（捕捉价格再次下跌测试支撑位的利润）
+    // - 触及压力位+收阴反转 -> 做多（捕捉价格再次上涨测试压力位的利润）
+
+    if willRetestSupport  // 预判再测支撑位 -> 做空
+        // 宽止损窄止盈策略：盈亏比 = 1:4.42
+        stopLoss = calculateWideStopLoss(1, close)      // 宽止损在上方
+        takeProfit = calculateNarrowTakeProfit(1, close) // 窄止盈在下方
+
+        if (stopLoss - close) > 0
+            riskAmount = (stopLoss - close) * strategy.equity / close
+            if riskAmount <= strategy.equity * i_maxRiskPercent / 100
+                strategy.entry("Short Retest Support", strategy.short, qty=posSize, limit=close, comment="Short@" + str.tostring(close))
+                strategy.exit("Exit Short", "Short Retest Support", limit=takeProfit, stop=stopLoss, comment="Exit Short")
+                currentStopLoss := stopLoss
+                currentTakeProfit := takeProfit
+                if alert_enabled
+                    alert('{"symbol":"' + syminfo.ticker + '","side":"short","entry_price":' + str.tostring(close) + ',"tp_price":' + str.tostring(takeProfit) + ',"sl_price":' + str.tostring(stopLoss) + ',"position_size":' + str.tostring(posSize) + '}', alert.freq_once_per_bar)
+
+    else if willRetestResistance  // 预判再测压力位 -> 做多
+        // 宽止损窄止盈策略：盈亏比 = 1:4.42
+        stopLoss = calculateWideStopLoss(-1, close)     // 宽止损在下方
+        takeProfit = calculateNarrowTakeProfit(-1, close) // 窄止盈在上方
+
+        if (close - stopLoss) > 0
+            riskAmount = (close - stopLoss) * strategy.equity / close
+            if riskAmount <= strategy.equity * i_maxRiskPercent / 100
+                strategy.entry("Long Retest Resistance", strategy.long, qty=posSize, limit=close, comment="Long@" + str.tostring(close))
+                strategy.exit("Exit Long", "Long Retest Resistance", limit=takeProfit, stop=stopLoss, comment="Exit Long")
+                currentStopLoss := stopLoss
+                currentTakeProfit := takeProfit
+                if alert_enabled
+                    alert('{"symbol":"' + syminfo.ticker + '","side":"long","entry_price":' + str.tostring(close) + ',"tp_price":' + str.tostring(takeProfit) + ',"sl_price":' + str.tostring(stopLoss) + ',"position_size":' + str.tostring(posSize) + '}', alert.freq_once_per_bar)
+
+// === 绘制止损止盈线 ===
+var line stopLossLine = na
+var line takeProfitLine = na
+var label stopLossLabel = na
+var label takeProfitLabel = na
+
+// 清除旧图形
+line.delete(stopLossLine)
+line.delete(takeProfitLine)
+label.delete(stopLossLabel)
+label.delete(takeProfitLabel)
+
+if strategy.position_size != 0
+    stopLossLine := line.new(bar_index - 1, currentStopLoss, bar_index, currentStopLoss, color=color.red, style=line.style_dashed, extend=extend.right)
+    takeProfitLine := line.new(bar_index - 1, currentTakeProfit, bar_index, currentTakeProfit, color=color.green, style=line.style_dashed, extend=extend.right)
+
+    stopLossText = "止损: " + str.tostring(currentStopLoss, "#.#####")
+    takeProfitText = "止盈: " + str.tostring(currentTakeProfit, "#.#####")
+    labelOffset = atr * 2
+
+    if strategy.position_size > 0  // 多头
+        stopLossLabel := label.new(bar_index + 10, currentStopLoss - labelOffset, stopLossText, color=color.new(color.red, 80), textcolor=color.red, style=label.style_label_left, size=size.small)
+        takeProfitLabel := label.new(bar_index + 10, currentTakeProfit + labelOffset, takeProfitText, color=color.new(color.green, 80), textcolor=color.green, style=label.style_label_left, size=size.small)
+    else  // 空头
+        stopLossLabel := label.new(bar_index + 10, currentStopLoss + labelOffset, stopLossText, color=color.new(color.red, 80), textcolor=color.red, style=label.style_label_left, size=size.small)
+        takeProfitLabel := label.new(bar_index + 10, currentTakeProfit - labelOffset, takeProfitText, color=color.new(color.green, 80), textcolor=color.green, style=label.style_label_left, size=size.small)
+
+// === 计算胜率 ===
+getRecentWinRate(int n) =>
+    int count = math.min(n, array.size(recentResults))
+    if count == 0
+        0.0
+    else
+        int wins = 0
+        for i = 0 to count - 1
+            if array.get(recentResults, array.size(recentResults) - 1 - i) == 1
+                wins += 1
+        float(wins) / float(count) * 100
+
+// === 显示统计表格 ===
+var table statsTable = table.new(position.top_right, 2, 4, border_width=1)
+var table streakTable = table.new(position.bottom_left, 2, 5, border_width=1)
+
+if barstate.islast
+    winRate = winTrades + lossTrades > 0 ? (winTrades / (winTrades + lossTrades) * 100) : 0.0
+
+    table.cell(statsTable, 0, 0, "交易统计", bgcolor=color.new(color.blue, 90))
+    table.cell(statsTable, 0, 1, "总收益: " + str.tostring(totalProfit, "#.##"))
+    table.cell(statsTable, 0, 2, "胜率: " + str.tostring(winRate, "#.##") + "%")
+    table.cell(statsTable, 0, 3, "最大回撤: " + str.tostring(maxDrawdown, "#.##"))
+    table.cell(statsTable, 1, 0, "交易次数", bgcolor=color.new(color.blue, 90))
+    table.cell(statsTable, 1, 1, "总交易: " + str.tostring(winTrades + lossTrades))
+    table.cell(statsTable, 1, 2, "盈利: " + str.tostring(winTrades))
+    table.cell(statsTable, 1, 3, "亏损: " + str.tostring(lossTrades))
+
+    streakText = currentStreak == 0 ? "无连胜连败" : (currentStreak > 0 ? "连胜: " + str.tostring(currentStreak) : "连败: " + str.tostring(math.abs(currentStreak)))
+    streakColor = currentStreak > 0 ? color.green : (currentStreak < 0 ? color.red : color.gray)
+
+    table.cell(streakTable, 0, 0, "连胜连败状态", bgcolor=color.new(color.blue, 90), text_color=color.white)
+    table.cell(streakTable, 1, 0, streakText, text_color=streakColor)
+
+    int row = 1
+    if i_showStats5 and array.size(recentResults) > 0
+        wr5 = getRecentWinRate(5)
+        table.cell(streakTable, 0, row, "最近5个信号胜率", bgcolor=color.new(color.blue, 90), text_color=color.white)
+        table.cell(streakTable, 1, row, str.tostring(wr5, "#.##") + "%", text_color=wr5 >= 50 ? color.green : color.red)
+        row += 1
+
+    if i_showStats10 and array.size(recentResults) > 0
+        wr10 = getRecentWinRate(10)
+        table.cell(streakTable, 0, row, "最近10个信号胜率", bgcolor=color.new(color.blue, 90), text_color=color.white)
+        table.cell(streakTable, 1, row, str.tostring(wr10, "#.##") + "%", text_color=wr10 >= 50 ? color.green : color.red)
+        row += 1
+
+    if i_showStats20 and array.size(recentResults) > 0
+        wr20 = getRecentWinRate(20)
+        table.cell(streakTable, 0, row, "最近20个信号胜率", bgcolor=color.new(color.blue, 90), text_color=color.white)
+        table.cell(streakTable, 1, row, str.tostring(wr20, "#.##") + "%", text_color=wr20 >= 50 ? color.green : color.red)
