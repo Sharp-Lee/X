@@ -44,7 +44,7 @@ class SystemStatus(BaseModel):
     status: str
     version: str
     symbols: list[str]
-    timeframe: str
+    timeframes: list[str]
     active_signals: int
 
 
@@ -81,7 +81,7 @@ async def get_status():
         status="running",
         version="0.1.0",
         symbols=settings.symbols,
-        timeframe=settings.timeframe,
+        timeframes=settings.timeframes,
         active_signals=len(active),
     )
 

@@ -25,7 +25,7 @@ class Settings(BaseSettings):
 
     # Trading Configuration
     symbols: list[str] = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
-    timeframe: str = "5m"
+    timeframes: list[str] = ["1m", "3m", "5m", "15m", "30m"]
 
     # Strategy Parameters
     ema_period: int = 50

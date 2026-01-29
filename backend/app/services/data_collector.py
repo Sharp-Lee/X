@@ -42,9 +42,16 @@ class DataCollector:
         """Register callback for new aggtrade data."""
         self._aggtrade_callbacks.append(callback)
 
-    def get_kline_buffer(self, symbol: str) -> KlineBuffer | None:
-        """Get the kline buffer for a symbol."""
-        key = f"{symbol}_{self.settings.timeframe}"
+    def get_kline_buffer(self, symbol: str, timeframe: str | None = None) -> KlineBuffer | None:
+        """Get the kline buffer for a symbol and timeframe.
+
+        Args:
+            symbol: Trading pair
+            timeframe: K-line interval (defaults to first configured timeframe)
+        """
+        if timeframe is None:
+            timeframe = self.settings.timeframes[0] if self.settings.timeframes else "5m"
+        key = f"{symbol}_{timeframe}"
         return self._kline_buffers.get(key)
 
     async def sync_historical_klines(
@@ -143,19 +150,23 @@ class DataCollector:
                 logger.error(f"AggTrade callback error: {e}")
 
     async def start(self) -> None:
-        """Start data collection for all configured symbols."""
+        """Start data collection for all configured symbols and timeframes."""
         symbols = self.settings.symbols
-        timeframe = self.settings.timeframe
+        timeframes = self.settings.timeframes
 
-        logger.info(f"Starting data collection for {symbols} on {timeframe}")
+        logger.info(f"Starting data collection for {symbols} on {timeframes}")
 
-        # Sync historical data first
+        # Sync historical data first (all symbol/timeframe combinations)
         for symbol in symbols:
-            await self.sync_historical_klines(symbol, timeframe, lookback_hours=48)
+            for timeframe in timeframes:
+                await self.sync_historical_klines(symbol, timeframe, lookback_hours=48)
 
         # Subscribe to WebSocket streams
         for symbol in symbols:
-            await self.kline_ws.subscribe(symbol, timeframe, self._handle_kline)
+            # Subscribe to all timeframes for klines
+            for timeframe in timeframes:
+                await self.kline_ws.subscribe(symbol, timeframe, self._handle_kline)
+            # AggTrade is independent of timeframe
             await self.aggtrade_ws.subscribe(symbol, self._handle_aggtrade)
 
         # Start WebSocket connections
