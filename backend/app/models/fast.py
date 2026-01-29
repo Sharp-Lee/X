@@ -93,6 +93,7 @@ class FastSignal:
     entry_price: float
     tp_price: float
     sl_price: float
+    atr_at_signal: float = 0.0  # ATR value when signal was generated
     streak_at_signal: int = 0
     mae_ratio: float = 0.0  # Maximum Adverse Excursion ratio
     mfe_ratio: float = 0.0  # Maximum Favorable Excursion ratio

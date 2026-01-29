@@ -30,6 +30,7 @@ class SignalResponse(BaseModel):
     entry_price: float
     tp_price: float
     sl_price: float
+    atr_at_signal: float
     streak_at_signal: int
     mae_ratio: float
     mfe_ratio: float
@@ -110,6 +111,7 @@ async def get_signals(
             entry_price=float(s.entry_price),
             tp_price=float(s.tp_price),
             sl_price=float(s.sl_price),
+            atr_at_signal=float(s.atr_at_signal),
             streak_at_signal=s.streak_at_signal,
             mae_ratio=float(s.mae_ratio),
             mfe_ratio=float(s.mfe_ratio),
@@ -139,6 +141,7 @@ async def get_active_signals(
             entry_price=float(s.entry_price),
             tp_price=float(s.tp_price),
             sl_price=float(s.sl_price),
+            atr_at_signal=float(s.atr_at_signal),
             streak_at_signal=s.streak_at_signal,
             mae_ratio=float(s.mae_ratio),
             mfe_ratio=float(s.mfe_ratio),
@@ -168,6 +171,7 @@ async def get_signal(signal_id: str):
         entry_price=float(signal.entry_price),
         tp_price=float(signal.tp_price),
         sl_price=float(signal.sl_price),
+        atr_at_signal=float(signal.atr_at_signal),
         streak_at_signal=signal.streak_at_signal,
         mae_ratio=float(signal.mae_ratio),
         mfe_ratio=float(signal.mfe_ratio),

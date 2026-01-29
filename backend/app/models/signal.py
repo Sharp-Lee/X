@@ -33,6 +33,7 @@ class SignalRecord(BaseModel):
     entry_price: Decimal
     tp_price: Decimal
     sl_price: Decimal
+    atr_at_signal: Decimal = Decimal("0")  # ATR value when signal was generated
     streak_at_signal: int = 0  # Positive = win streak, negative = loss streak
     mae_ratio: Decimal = Decimal("0")  # Maximum Adverse Excursion ratio
     mfe_ratio: Decimal = Decimal("0")  # Maximum Favorable Excursion ratio

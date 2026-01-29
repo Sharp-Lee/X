@@ -295,11 +295,12 @@ class SignalGenerator:
                     entry_price=close,
                     tp_price=tp_price,
                     sl_price=sl_price,
+                    atr_at_signal=atr_value,
                     streak_at_signal=self.streak_tracker.current_streak,
                 )
                 logger.info(
                     f"SHORT signal: {kline.symbol} @ {close} "
-                    f"TP={tp_price} SL={sl_price}"
+                    f"TP={tp_price} SL={sl_price} ATR={atr_value}"
                 )
 
         # LONG signal: Downtrend + Touch resistance + Bearish reversal
@@ -325,11 +326,12 @@ class SignalGenerator:
                     entry_price=close,
                     tp_price=tp_price,
                     sl_price=sl_price,
+                    atr_at_signal=atr_value,
                     streak_at_signal=self.streak_tracker.current_streak,
                 )
                 logger.info(
                     f"LONG signal: {kline.symbol} @ {close} "
-                    f"TP={tp_price} SL={sl_price}"
+                    f"TP={tp_price} SL={sl_price} ATR={atr_value}"
                 )
 
         return signal
