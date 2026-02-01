@@ -191,7 +191,7 @@ class AggTradeRepository:
     """Repository for aggregated trade data operations."""
 
     async def save_batch(self, trades: list[AggTrade]) -> None:
-        """Save multiple trades in batch."""
+        """Save multiple trades in batch using INSERT."""
         if not trades:
             return
 
@@ -208,10 +208,53 @@ class AggTradeRepository:
                 for t in trades
             ]
             stmt = insert(AggTradeTable).values(values)
+            # Use primary key (symbol, timestamp, agg_trade_id) for conflict resolution
             stmt = stmt.on_conflict_do_nothing(
-                index_elements=["symbol", "agg_trade_id"]
+                index_elements=["symbol", "timestamp", "agg_trade_id"]
             )
             await session.execute(stmt)
+
+    async def copy_batch(self, trades: list[AggTrade]) -> int:
+        """Save trades using PostgreSQL COPY command (5-10x faster than INSERT).
+
+        Note: COPY doesn't handle conflicts, so use for fresh data only.
+        Returns number of rows copied.
+        """
+        if not trades:
+            return 0
+
+        import asyncpg
+        from app.config import get_settings
+
+        settings = get_settings()
+        db_url = settings.database_url
+
+        # Connect directly with asyncpg (bypass SQLAlchemy)
+        conn = await asyncpg.connect(db_url)
+        try:
+            # Prepare records as tuples
+            records = [
+                (
+                    t.symbol,
+                    t.timestamp,
+                    t.agg_trade_id,
+                    float(t.price),
+                    float(t.quantity),
+                    t.is_buyer_maker,
+                )
+                for t in trades
+            ]
+
+            # Use COPY
+            result = await conn.copy_records_to_table(
+                "aggtrades",
+                records=records,
+                columns=["symbol", "timestamp", "agg_trade_id", "price", "quantity", "is_buyer_maker"],
+            )
+            # result format: "COPY <count>"
+            return int(result.split()[1])
+        finally:
+            await conn.close()
 
     async def get_range(
         self,
