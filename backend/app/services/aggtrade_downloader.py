@@ -283,13 +283,16 @@ class AggTradeDownloader:
             if month_end < end_date:
                 # Full month - download monthly file
                 url = f"{MONTHLY_URL}/{symbol}/{symbol}-aggTrades-{year}-{month:02d}.zip"
-                logger.info(f"[{symbol}] 下载 {year}-{month:02d}...")
+                print(f"  [{symbol}] {year}-{month:02d}...", end=" ", flush=True)
                 semaphore = asyncio.Semaphore(1)
                 content = await self._download_file(url, semaphore)
                 if content:
+                    size_mb = len(content) / 1024 / 1024
                     count = await self._process_and_save(content, symbol, f"{year}-{month:02d}")
                     total += count
-                    logger.info(f"[{symbol}] {year}-{month:02d} 完成: {count:,} 条")
+                    print(f"{count:>10,} 条 ({size_mb:.0f}MB)")
+                else:
+                    print("无数据")
             else:
                 # Partial month - use daily files with parallel download
                 dates = []
@@ -297,6 +300,8 @@ class AggTradeDownloader:
                 while day <= end_date and day.month == month:
                     dates.append(day)
                     day += timedelta(days=1)
+
+                print(f"  [{symbol}] {year}-{month:02d} (日度 x{len(dates)})...", end=" ", flush=True)
 
                 # Parallel download
                 semaphore = asyncio.Semaphore(self.max_concurrent_downloads)
@@ -309,14 +314,18 @@ class AggTradeDownloader:
                 results = await asyncio.gather(*[t[1] for t in tasks])
 
                 # Sequential save
+                month_count = 0
                 for i, (ds, _) in enumerate(tasks):
                     if results[i]:
                         count = await self._process_and_save(results[i], symbol, ds)
+                        month_count += count
                         total += count
+
+                print(f"{month_count:>10,} 条")
 
             current = (current + timedelta(days=32)).replace(day=1)
 
-        logger.info(f"[{symbol}] 历史同步完成: {total:,} 条")
+        print(f"  [{symbol}] 完成: {total:,} 条")
         return total
 
 

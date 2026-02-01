@@ -125,7 +125,9 @@ async def main():
                     if args.days:
                         count = await downloader.sync_recent(symbol, args.days)
                     else:
+                        print(f"[{symbol}] 开始下载历史数据...")
                         count = await downloader.sync_historical(symbol, args.start, args.end)
+                        print(f"[{symbol}] 完成: {count:,} 条")
                     results[symbol] = count
             finally:
                 await downloader.close()
