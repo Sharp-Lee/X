@@ -245,7 +245,26 @@ class PositionTracker:
             outcome=signal_record.outcome,
             outcome_time=signal_record.outcome_time,
             outcome_price=signal_record.outcome_price,
+            max_atr=signal_record.max_atr,
         )
+
+    async def update_max_atr(self, symbol: str, timeframe: str, current_atr: float) -> None:
+        """Update max_atr for all active signals matching symbol and timeframe.
+
+        Called when a new kline closes and ATR is recalculated.
+
+        Args:
+            symbol: Trading pair
+            timeframe: K-line interval
+            current_atr: Current ATR value
+        """
+        async with self._lock:
+            if symbol not in self._active_signals:
+                return
+
+            for fast_signal in self._active_signals[symbol]:
+                if fast_signal.timeframe == timeframe and fast_signal.outcome == "active":
+                    fast_signal.update_max_atr(current_atr)
 
     def get_active_signals(self, symbol: str | None = None) -> list[SignalRecord]:
         """Get all active signals, optionally filtered by symbol.
@@ -309,110 +328,3 @@ class PositionTracker:
             "misses": self._cache_misses,
             "hit_rate": hit_rate,
         }
-
-
-class BacktestTracker:
-    """
-    Track signals during backtesting using historical aggTrade data.
-
-    Uses hot path models internally for fast processing.
-    Does NOT use Redis cache (backtesting is offline).
-    """
-
-    def __init__(self):
-        self.signal_repo = SignalRepository()
-
-    async def backtest_signal(
-        self,
-        signal: SignalRecord,
-        trades: list[AggTrade],
-    ) -> SignalRecord:
-        """
-        Backtest a signal against historical trades.
-
-        Args:
-            signal: The signal to backtest (cold path)
-            trades: Historical trades after signal time (cold path)
-
-        Returns:
-            Updated signal with outcome (cold path)
-        """
-        # Convert to hot path for fast processing
-        fast_signal = signal_to_fast(signal)
-        signal_time = fast_signal.signal_time
-
-        for trade in trades:
-            fast_trade = aggtrade_to_fast(trade)
-
-            # Skip trades before signal
-            if fast_trade.timestamp < signal_time:
-                continue
-
-            # Check outcome (hot path)
-            if fast_signal.check_outcome(fast_trade.price, fast_trade.timestamp):
-                break
-
-            # Update MAE (hot path)
-            fast_signal.update_mae(fast_trade.price)
-
-        # Convert back to cold path
-        return fast_to_signal(fast_signal)
-
-    async def backtest_all_signals(
-        self,
-        symbol: str,
-        signals: list[SignalRecord],
-        trades: list[AggTrade],
-    ) -> list[SignalRecord]:
-        """
-        Backtest multiple signals against historical trades.
-
-        Signals should be sorted by signal_time.
-        Trades should be sorted by timestamp.
-
-        Args:
-            symbol: Trading pair
-            signals: List of signals to backtest (cold path)
-            trades: List of historical trades (cold path)
-
-        Returns:
-            List of updated signals with outcomes (cold path)
-        """
-        if not signals or not trades:
-            return signals
-
-        # Convert all to hot path for fast batch processing
-        fast_signals = [signal_to_fast(s) for s in signals]
-        fast_trades = [aggtrade_to_fast(t) for t in trades]
-
-        results = []
-        trade_idx = 0
-
-        for fast_signal in fast_signals:
-            signal_time = fast_signal.signal_time
-
-            # Find trades that start after this signal
-            while trade_idx < len(fast_trades) and fast_trades[trade_idx].timestamp < signal_time:
-                trade_idx += 1
-
-            # Process trades until outcome or end
-            current_idx = trade_idx
-            while current_idx < len(fast_trades):
-                fast_trade = fast_trades[current_idx]
-
-                # Check outcome (hot path)
-                if fast_signal.check_outcome(fast_trade.price, fast_trade.timestamp):
-                    break
-
-                # Update MAE (hot path)
-                fast_signal.update_mae(fast_trade.price)
-                current_idx += 1
-
-            # Convert back to cold path
-            signal_record = fast_to_signal(fast_signal)
-            results.append(signal_record)
-
-            # Save to database
-            await self.signal_repo.save(signal_record)
-
-        return results

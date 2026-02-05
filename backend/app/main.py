@@ -93,7 +93,15 @@ async def on_kline_update(kline) -> None:
     # Get buffer for the specific timeframe of this kline
     buffer = data_collector.get_kline_buffer(kline.symbol, kline.timeframe)
     if buffer and kline.is_closed:
-        await signal_generator.process_kline(kline, buffer)
+        result = await signal_generator.process_kline(kline, buffer)
+
+        # Update max_atr for active signals of this symbol/timeframe
+        if position_tracker and result.atr is not None:
+            await position_tracker.update_max_atr(
+                symbol=kline.symbol,
+                timeframe=kline.timeframe,
+                current_atr=result.atr,
+            )
 
 
 async def on_aggtrade_update(trade) -> None:

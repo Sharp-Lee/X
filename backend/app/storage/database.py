@@ -12,7 +12,6 @@ from sqlalchemy import (
     Integer,
     Numeric,
     String,
-    Text,
     text,
 )
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
@@ -72,6 +71,8 @@ class SignalTable(Base):
     entry_price = Column(Numeric(20, 8), nullable=False)
     tp_price = Column(Numeric(20, 8), nullable=False)
     sl_price = Column(Numeric(20, 8), nullable=False)
+    atr_at_signal = Column(Numeric(20, 8), default=0)
+    max_atr = Column(Numeric(20, 8), default=0)
     streak_at_signal = Column(Integer, default=0)
     mae_ratio = Column(Numeric(10, 6), default=0)
     mfe_ratio = Column(Numeric(10, 6), default=0)

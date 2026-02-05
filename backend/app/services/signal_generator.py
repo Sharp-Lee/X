@@ -1,6 +1,7 @@
 """Signal generator implementing the MSR Retest Capture strategy."""
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from typing import Callable, Awaitable
@@ -22,6 +23,13 @@ logger = logging.getLogger(__name__)
 
 # Type alias for signal callback
 SignalCallback = Callable[[SignalRecord], Awaitable[None]]
+
+
+@dataclass
+class ProcessKlineResult:
+    """Result of processing a kline."""
+    signal: SignalRecord | None  # Generated signal, if any
+    atr: float | None  # Current ATR value (for updating max_atr of active signals)
 
 
 class LevelManager:
@@ -296,6 +304,7 @@ class SignalGenerator:
                     tp_price=tp_price,
                     sl_price=sl_price,
                     atr_at_signal=atr_value,
+                    max_atr=atr_value,  # Initialize max_atr with atr_at_signal
                     streak_at_signal=self.streak_tracker.current_streak,
                 )
                 logger.info(
@@ -327,6 +336,7 @@ class SignalGenerator:
                     tp_price=tp_price,
                     sl_price=sl_price,
                     atr_at_signal=atr_value,
+                    max_atr=atr_value,  # Initialize max_atr with atr_at_signal
                     streak_at_signal=self.streak_tracker.current_streak,
                 )
                 logger.info(
@@ -340,7 +350,7 @@ class SignalGenerator:
         self,
         kline: Kline,
         buffer: KlineBuffer,
-    ) -> SignalRecord | None:
+    ) -> ProcessKlineResult:
         """
         Process a closed kline and generate signal if conditions are met.
 
@@ -349,14 +359,14 @@ class SignalGenerator:
             buffer: Buffer containing recent klines for indicator calculation
 
         Returns:
-            SignalRecord if signal generated, None otherwise
+            ProcessKlineResult with signal (if generated) and current ATR
         """
         if not kline.is_closed:
-            return None
+            return ProcessKlineResult(signal=None, atr=None)
 
         # Need enough history for indicators
         if len(buffer) < 50:
-            return None
+            return ProcessKlineResult(signal=None, atr=None)
 
         # Get OHLCV data from buffer
         klines = buffer.klines
@@ -372,7 +382,10 @@ class SignalGenerator:
         )
 
         if indicators is None:
-            return None
+            return ProcessKlineResult(signal=None, atr=None)
+
+        # Extract ATR for updating max_atr of active signals
+        atr_value = float(indicators["atr"]) if indicators["atr"] else None
 
         # Get previous kline for level touch detection
         prev_kline = klines[-2] if len(klines) >= 2 else None
@@ -391,7 +404,7 @@ class SignalGenerator:
                 except Exception as e:
                     logger.error(f"Signal callback error: {e}")
 
-        return signal
+        return ProcessKlineResult(signal=signal, atr=atr_value)
 
     async def record_outcome(self, outcome: Outcome) -> None:
         """Record a signal outcome and update streak tracker."""

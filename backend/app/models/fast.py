@@ -94,6 +94,7 @@ class FastSignal:
     tp_price: float
     sl_price: float
     atr_at_signal: float = 0.0  # ATR value when signal was generated
+    max_atr: float = 0.0  # Maximum ATR during signal lifetime
     streak_at_signal: int = 0
     mae_ratio: float = 0.0  # Maximum Adverse Excursion ratio
     mfe_ratio: float = 0.0  # Maximum Favorable Excursion ratio
@@ -190,6 +191,15 @@ class FastSignal:
                 return True
 
         return False
+
+    def update_max_atr(self, current_atr: float) -> None:
+        """Update max_atr if current ATR is higher.
+
+        Args:
+            current_atr: Current ATR value from latest kline
+        """
+        if self.outcome == "active" and current_atr > self.max_atr:
+            self.max_atr = current_atr
 
     @property
     def is_active(self) -> bool:

@@ -19,7 +19,9 @@ function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <h1>MSR Retest Capture</h1>
+        <div className="header-left">
+          <h1>MSR Retest Capture</h1>
+        </div>
         <div className="header-right">
           <select
             value={selectedSymbol || 'all'}

@@ -26,6 +26,8 @@ class SignalRepository:
                 entry_price=signal.entry_price,
                 tp_price=signal.tp_price,
                 sl_price=signal.sl_price,
+                atr_at_signal=signal.atr_at_signal,
+                max_atr=signal.max_atr,
                 streak_at_signal=signal.streak_at_signal,
                 mae_ratio=signal.mae_ratio,
                 mfe_ratio=signal.mfe_ratio,
@@ -36,6 +38,7 @@ class SignalRepository:
             stmt = stmt.on_conflict_do_update(
                 index_elements=["id"],
                 set_={
+                    "max_atr": stmt.excluded.max_atr,
                     "mae_ratio": stmt.excluded.mae_ratio,
                     "mfe_ratio": stmt.excluded.mfe_ratio,
                     "outcome": stmt.excluded.outcome,
@@ -53,19 +56,24 @@ class SignalRepository:
         outcome: Outcome,
         outcome_time: datetime | None = None,
         outcome_price: Decimal | None = None,
+        max_atr: Decimal | None = None,
     ) -> None:
-        """Update signal outcome and MAE/MFE ratios."""
+        """Update signal outcome, MAE/MFE ratios, and max_atr."""
         async with get_database().session() as session:
+            values = {
+                "mae_ratio": mae_ratio,
+                "mfe_ratio": mfe_ratio,
+                "outcome": outcome.value,
+                "outcome_time": outcome_time,
+                "outcome_price": outcome_price,
+            }
+            if max_atr is not None:
+                values["max_atr"] = max_atr
+
             stmt = (
                 update(SignalTable)
                 .where(SignalTable.id == signal_id)
-                .values(
-                    mae_ratio=mae_ratio,
-                    mfe_ratio=mfe_ratio,
-                    outcome=outcome.value,
-                    outcome_time=outcome_time,
-                    outcome_price=outcome_price,
-                )
+                .values(**values)
             )
             await session.execute(stmt)
 
@@ -178,6 +186,8 @@ class SignalRepository:
             entry_price=Decimal(str(row.entry_price)),
             tp_price=Decimal(str(row.tp_price)),
             sl_price=Decimal(str(row.sl_price)),
+            atr_at_signal=Decimal(str(row.atr_at_signal)) if row.atr_at_signal else Decimal("0"),
+            max_atr=Decimal(str(row.max_atr)) if row.max_atr else Decimal("0"),
             streak_at_signal=row.streak_at_signal,
             mae_ratio=Decimal(str(row.mae_ratio)),
             mfe_ratio=Decimal(str(row.mfe_ratio)),
