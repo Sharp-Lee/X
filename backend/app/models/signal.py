@@ -1,9 +1,9 @@
 """Signal and trade data models."""
 
+import hashlib
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
-from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -22,10 +22,23 @@ class Outcome(str, Enum):
     SL = "sl"  # Stop loss hit
 
 
+def _generate_signal_id(symbol: str, timeframe: str, signal_time: datetime, direction: int) -> str:
+    """Generate deterministic signal ID based on signal attributes.
+
+    This ensures the same signal generates the same ID during replay,
+    preventing duplicate signals after crash recovery.
+    """
+    # Format timestamp to microsecond precision for uniqueness
+    ts_str = signal_time.strftime("%Y%m%d%H%M%S%f")
+    key = f"{symbol}:{timeframe}:{ts_str}:{direction}"
+    # Use first 32 chars of SHA256 for a UUID-like format
+    return hashlib.sha256(key.encode()).hexdigest()[:32]
+
+
 class SignalRecord(BaseModel):
     """Trading signal record."""
 
-    id: str = Field(default_factory=lambda: str(uuid4()))
+    id: str = ""  # Will be set in model_post_init
     symbol: str
     timeframe: str
     signal_time: datetime
@@ -41,6 +54,17 @@ class SignalRecord(BaseModel):
     outcome: Outcome = Outcome.ACTIVE
     outcome_time: datetime | None = None
     outcome_price: Decimal | None = None
+
+    def model_post_init(self, __context) -> None:
+        """Generate deterministic ID after model initialization."""
+        if not self.id:
+            object.__setattr__(
+                self,
+                "id",
+                _generate_signal_id(
+                    self.symbol, self.timeframe, self.signal_time, self.direction.value
+                ),
+            )
 
     @property
     def risk_amount(self) -> Decimal:

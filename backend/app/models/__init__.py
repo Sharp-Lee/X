@@ -9,6 +9,7 @@ from app.models.signal import (
     StreakTracker,
 )
 from app.models.config import StrategyConfig, SymbolConfig
+from app.models.processing_state import ProcessingState
 from app.models.fast import (
     FastKline,
     FastTrade,
@@ -42,6 +43,7 @@ __all__ = [
     "StreakTracker",
     "StrategyConfig",
     "SymbolConfig",
+    "ProcessingState",
     # Hot path (dataclass)
     "FastKline",
     "FastTrade",

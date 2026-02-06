@@ -57,7 +57,7 @@ class TestPositionTracker:
         """Test adding a signal to tracker."""
         await tracker.add_signal(long_signal)
 
-        signals = tracker.get_active_signals("BTCUSDT")
+        signals = await tracker.get_active_signals("BTCUSDT")
         assert len(signals) == 1
         assert signals[0].id == long_signal.id
 
@@ -104,7 +104,7 @@ class TestPositionTracker:
         status = tracker.get_signal_status(long_signal.id)
         assert status is None
 
-        signals = tracker.get_active_signals("BTCUSDT")
+        signals = await tracker.get_active_signals("BTCUSDT")
         assert len(signals) == 0
 
     @pytest.mark.asyncio
@@ -125,7 +125,7 @@ class TestPositionTracker:
         await tracker.process_trade(trade)
 
         # Signal should be removed from active
-        signals = tracker.get_active_signals("BTCUSDT")
+        signals = await tracker.get_active_signals("BTCUSDT")
         assert len(signals) == 0
 
     @pytest.mark.asyncio
@@ -154,9 +154,9 @@ class TestPositionTracker:
         await tracker.add_signal(btc_signal)
         await tracker.add_signal(eth_signal)
 
-        assert len(tracker.get_active_signals("BTCUSDT")) == 1
-        assert len(tracker.get_active_signals("ETHUSDT")) == 1
-        assert len(tracker.get_active_signals()) == 2
+        assert len(await tracker.get_active_signals("BTCUSDT")) == 1
+        assert len(await tracker.get_active_signals("ETHUSDT")) == 1
+        assert len(await tracker.get_active_signals()) == 2
 
     @pytest.mark.asyncio
     async def test_short_position_tracking(self, tracker, short_signal):

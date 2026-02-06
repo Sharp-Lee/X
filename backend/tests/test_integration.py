@@ -462,9 +462,9 @@ class TestMultiSymbolConcurrency:
                         assert tracker.active_count == 3
 
                         # Check each symbol's status
-                        btc_signals = tracker.get_active_signals("BTCUSDT")
-                        eth_signals = tracker.get_active_signals("ETHUSDT")
-                        sol_signals = tracker.get_active_signals("SOLUSDT")
+                        btc_signals = await tracker.get_active_signals("BTCUSDT")
+                        eth_signals = await tracker.get_active_signals("ETHUSDT")
+                        sol_signals = await tracker.get_active_signals("SOLUSDT")
 
                         assert len(btc_signals) == 1
                         assert len(eth_signals) == 1

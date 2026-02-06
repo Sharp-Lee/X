@@ -28,8 +28,9 @@ logger = logging.getLogger(__name__)
 # Type alias for outcome callback (receives cold path SignalRecord)
 OutcomeCallback = Callable[[SignalRecord, Outcome], Awaitable[None]]
 
-# Cache update interval (less frequent than in-memory to reduce Redis load)
-CACHE_UPDATE_INTERVAL = 5.0  # seconds
+# Note: Cache updates are now synced with DB updates (same interval)
+# to ensure consistency. Previously cache was updated less frequently,
+# causing staleness issues.
 
 
 class PositionTracker:
@@ -67,9 +68,8 @@ class PositionTracker:
         # Active signals by symbol (hot path: FastSignal)
         self._active_signals: dict[str, list[FastSignal]] = {}
 
-        # Last update time for each signal (to throttle DB writes)
+        # Last update time for each signal (to throttle DB/cache writes)
         self._last_db_update: dict[str, float] = {}
-        self._last_cache_update: dict[str, float] = {}
 
         # Callbacks for outcome events
         self._outcome_callbacks: list[OutcomeCallback] = []
@@ -123,8 +123,13 @@ class PositionTracker:
                 logger.info(f"Loaded {total} active signals from database")
 
                 # Sync to cache for next startup
+                # Note: We're already holding the lock, so directly access _active_signals
                 if total > 0:
-                    all_signals = self.get_active_fast_signals()
+                    all_signals = [
+                        signal
+                        for signals in self._active_signals.values()
+                        for signal in signals
+                    ]
                     await signal_cache.sync_from_db(all_signals)
 
     async def add_signal(self, signal: SignalRecord) -> None:
@@ -157,46 +162,56 @@ class PositionTracker:
         price = fast_trade.price
         timestamp = fast_trade.timestamp
 
+        # Collect data for updates outside lock
+        signals_for_db_update: list[FastSignal] = []
+        signals_with_outcome: list[FastSignal] = []
+
         async with self._lock:
             if symbol not in self._active_signals:
                 return
 
             signals_to_remove = []
+            now = asyncio.get_event_loop().time()
 
             for fast_signal in self._active_signals[symbol]:
                 # Check for outcome (TP or SL hit) - hot path
                 outcome_changed = fast_signal.check_outcome(price, timestamp)
 
                 if outcome_changed:
-                    # Signal hit TP or SL
-                    await self._handle_outcome(fast_signal)
+                    # Signal hit TP or SL - collect for processing outside lock
+                    signals_with_outcome.append(fast_signal)
                     signals_to_remove.append(fast_signal)
                 else:
                     # Update MAE - hot path (very fast)
                     fast_signal.update_mae(price)
 
-                    # Throttle DB updates
-                    now = asyncio.get_event_loop().time()
-                    last_db = self._last_db_update.get(fast_signal.id, 0)
-                    last_cache = self._last_cache_update.get(fast_signal.id, 0)
+                    # Throttle updates - DB and cache are updated together for consistency
+                    last_update = self._last_db_update.get(fast_signal.id, 0)
 
-                    # Update database (throttled)
-                    if now - last_db >= self.update_interval:
-                        await self._update_signal_mae(fast_signal)
+                    # Collect for database AND cache update (synced)
+                    if now - last_update >= self.update_interval:
+                        signals_for_db_update.append(fast_signal)
                         self._last_db_update[fast_signal.id] = now
-
-                    # Update cache (less frequently)
-                    if now - last_cache >= CACHE_UPDATE_INTERVAL:
-                        await signal_cache.update_signal(fast_signal)
-                        self._last_cache_update[fast_signal.id] = now
 
             # Remove closed signals
             for fast_signal in signals_to_remove:
                 self._active_signals[symbol].remove(fast_signal)
                 if fast_signal.id in self._last_db_update:
                     del self._last_db_update[fast_signal.id]
-                if fast_signal.id in self._last_cache_update:
-                    del self._last_cache_update[fast_signal.id]
+
+        # Process outcomes OUTSIDE lock (DB and callbacks are slow)
+        for fast_signal in signals_with_outcome:
+            await self._handle_outcome(fast_signal)
+
+        # Update database AND cache OUTSIDE lock (slow I/O)
+        # Both are updated together to ensure consistency
+        for fast_signal in signals_for_db_update:
+            try:
+                await self._update_signal_mae(fast_signal)
+                # Update cache immediately after successful DB update
+                await signal_cache.update_signal(fast_signal)
+            except Exception as e:
+                logger.warning(f"Failed to update MAE/cache for {fast_signal.id}: {e}")
 
     async def _handle_outcome(self, fast_signal: FastSignal) -> None:
         """Handle signal outcome (TP or SL hit)."""
@@ -234,7 +249,11 @@ class PositionTracker:
                 logger.error(f"Outcome callback error: {e}")
 
     async def _update_signal_mae(self, fast_signal: FastSignal) -> None:
-        """Update signal MAE in database."""
+        """Update signal MAE in database.
+
+        Raises:
+            Exception: If database update fails (caller should handle)
+        """
         # Convert to cold path for database update
         signal_record = fast_to_signal(fast_signal)
 
@@ -266,34 +285,40 @@ class PositionTracker:
                 if fast_signal.timeframe == timeframe and fast_signal.outcome == "active":
                     fast_signal.update_max_atr(current_atr)
 
-    def get_active_signals(self, symbol: str | None = None) -> list[SignalRecord]:
+    async def get_active_signals(self, symbol: str | None = None) -> list[SignalRecord]:
         """Get all active signals, optionally filtered by symbol.
 
         Returns cold path SignalRecord models for API compatibility.
+
+        Note: This is now async to properly acquire lock for thread safety.
         """
-        if symbol:
-            fast_signals = self._active_signals.get(symbol, [])
-        else:
-            fast_signals = [
+        async with self._lock:
+            if symbol:
+                fast_signals = list(self._active_signals.get(symbol, []))
+            else:
+                fast_signals = [
+                    signal
+                    for signals in self._active_signals.values()
+                    for signal in signals
+                ]
+        # Convert to cold path for external use (outside lock)
+        return [fast_to_signal(s) for s in fast_signals]
+
+    async def get_active_fast_signals(self, symbol: str | None = None) -> list[FastSignal]:
+        """Get all active signals as FastSignal (hot path).
+
+        Use this for internal processing where performance matters.
+
+        Note: This is now async to properly acquire lock for thread safety.
+        """
+        async with self._lock:
+            if symbol:
+                return list(self._active_signals.get(symbol, []))
+            return [
                 signal
                 for signals in self._active_signals.values()
                 for signal in signals
             ]
-        # Convert to cold path for external use
-        return [fast_to_signal(s) for s in fast_signals]
-
-    def get_active_fast_signals(self, symbol: str | None = None) -> list[FastSignal]:
-        """Get all active signals as FastSignal (hot path).
-
-        Use this for internal processing where performance matters.
-        """
-        if symbol:
-            return list(self._active_signals.get(symbol, []))
-        return [
-            signal
-            for signals in self._active_signals.values()
-            for signal in signals
-        ]
 
     def get_signal_status(self, signal_id: str) -> dict | None:
         """Get current status of a tracked signal."""

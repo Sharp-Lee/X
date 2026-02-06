@@ -65,6 +65,11 @@ def _deserialize_signal(data: bytes) -> FastSignal | None:
 async def cache_signal(signal: FastSignal) -> bool:
     """Cache an active signal.
 
+    Uses Redis pipeline to batch 3 operations into 1 network round-trip:
+    - Store signal data
+    - Add to symbol set
+    - Add to all signals set
+
     Args:
         signal: The FastSignal to cache
 
@@ -74,20 +79,23 @@ async def cache_signal(signal: FastSignal) -> bool:
     if not cache.is_cache_available():
         return False
 
+    client = cache.get_client()
+    if client is None:
+        return False
+
     try:
         # Serialize signal
         data = _serialize_signal(signal)
-
-        # Store signal data
         signal_key = _signal_key(signal.id)
-        await cache.set(signal_key, data, ttl=SIGNAL_TTL)
-
-        # Add to symbol set
         symbol_key = _symbol_set_key(signal.symbol)
-        await cache.sadd(symbol_key, signal.id)
+        all_key = _all_signals_key()
 
-        # Add to all signals set
-        await cache.sadd(_all_signals_key(), signal.id)
+        # Use pipeline to batch all 3 operations
+        async with client.pipeline(transaction=False) as pipe:
+            pipe.setex(signal_key, SIGNAL_TTL, data)
+            pipe.sadd(symbol_key, signal.id)
+            pipe.sadd(all_key, signal.id)
+            await pipe.execute()
 
         logger.debug(f"Cached signal {signal.id}")
         return True
@@ -141,6 +149,11 @@ async def update_signal(signal: FastSignal) -> bool:
 async def remove_signal(signal_id: str, symbol: str) -> bool:
     """Remove a signal from cache.
 
+    Uses Redis pipeline to batch 3 operations into 1 network round-trip:
+    - Delete signal data
+    - Remove from symbol set
+    - Remove from all signals set
+
     Args:
         signal_id: The signal ID
         symbol: The symbol (needed to remove from symbol set)
@@ -151,15 +164,21 @@ async def remove_signal(signal_id: str, symbol: str) -> bool:
     if not cache.is_cache_available():
         return False
 
+    client = cache.get_client()
+    if client is None:
+        return False
+
     try:
-        # Remove signal data
-        await cache.delete(_signal_key(signal_id))
+        signal_key = _signal_key(signal_id)
+        symbol_key = _symbol_set_key(symbol)
+        all_key = _all_signals_key()
 
-        # Remove from symbol set
-        await cache.srem(_symbol_set_key(symbol), signal_id)
-
-        # Remove from all signals set
-        await cache.srem(_all_signals_key(), signal_id)
+        # Use pipeline to batch all 3 operations
+        async with client.pipeline(transaction=False) as pipe:
+            pipe.delete(signal_key)
+            pipe.srem(symbol_key, signal_id)
+            pipe.srem(all_key, signal_id)
+            await pipe.execute()
 
         logger.debug(f"Removed signal {signal_id} from cache")
         return True

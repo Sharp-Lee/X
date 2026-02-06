@@ -83,6 +83,33 @@ class SignalTable(Base):
     __table_args__ = (
         Index("idx_signals_symbol_time", "symbol", "signal_time"),
         Index("idx_signals_outcome", "outcome"),
+        # Composite index for get_active() queries: WHERE symbol = X AND outcome = Y
+        Index("idx_signals_symbol_tf_outcome", "symbol", "timeframe", "outcome"),
+    )
+
+
+class ProcessingStateTable(Base):
+    """Processing state table for tracking K-line replay progress.
+
+    Used to ensure signal determinism across restarts:
+    - system_start_time: First-ever startup time (never changes)
+    - last_processed_time: Last successfully processed kline timestamp
+    - state_status: 'pending' during replay, 'confirmed' after commit
+    """
+
+    __tablename__ = "processing_state"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False)
+    timeframe = Column(String(10), nullable=False)
+    system_start_time = Column(DateTime(timezone=True), nullable=False)
+    last_processed_time = Column(DateTime(timezone=True), nullable=False)
+    state_status = Column(String(20), default="confirmed")  # 'pending' | 'confirmed'
+    created_at = Column(DateTime(timezone=True), server_default=text("NOW()"))
+    updated_at = Column(DateTime(timezone=True), server_default=text("NOW()"), onupdate=text("NOW()"))
+
+    __table_args__ = (
+        Index("idx_processing_state_symbol_tf", "symbol", "timeframe", unique=True),
     )
 
 
@@ -97,7 +124,31 @@ class Database:
         if url.startswith("postgresql://"):
             url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-        self.engine = create_async_engine(url, echo=settings.debug)
+        # Connection pool configuration for high-concurrency trading system
+        # - pool_size: Base number of persistent connections
+        # - max_overflow: Additional connections allowed under load
+        # - pool_pre_ping: Validate connections before use (detect stale connections)
+        # - pool_recycle: Recycle connections after 1 hour to prevent stale connections
+        # - pool_timeout: Max wait time for a connection from pool
+        #
+        # Sizing: 5 symbols × 5 timeframes = 25 concurrent operations possible
+        # Plus signal tracking, position updates, and burst operations
+        self.engine = create_async_engine(
+            url,
+            echo=settings.debug,
+            pool_size=20,          # Base connections for steady-state operations
+            max_overflow=30,       # Allow burst up to 50 total connections
+            pool_pre_ping=True,    # Validate before use
+            pool_recycle=3600,     # Recycle every hour
+            pool_timeout=30,       # Wait max 30s for connection
+            connect_args={
+                "timeout": 10,                 # Connection timeout
+                "command_timeout": 60,         # Query timeout
+                "server_settings": {
+                    "statement_timeout": "60000",  # 60s statement timeout
+                },
+            },
+        )
         self.session_factory = async_sessionmaker(
             self.engine, class_=AsyncSession, expire_on_commit=False
         )

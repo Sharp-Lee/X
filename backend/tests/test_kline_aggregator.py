@@ -303,17 +303,18 @@ class TestKlineAggregator:
         """Prefill should populate buffer with historical klines."""
         aggregator = KlineAggregator(target_timeframes=["5m"])
 
-        # Create historical klines (last 3 minutes of a 5m period)
-        # Assuming period starts at timestamp 0, we're at minute 2, 3, 4
+        # Create historical klines for an INCOMPLETE 5m period
+        # 5m period starts at 300, we have klines at minute 0, 1, 2 of that period
+        # Last kline ends at 480, which is NOT on a 5m boundary (480 % 300 != 0)
         history = [
-            make_1m_kline(timestamp=120),  # Minute 2
-            make_1m_kline(timestamp=180),  # Minute 3
-            make_1m_kline(timestamp=240),  # Minute 4
+            make_1m_kline(timestamp=300),  # Period start (minute 0)
+            make_1m_kline(timestamp=360),  # Minute 1
+            make_1m_kline(timestamp=420),  # Minute 2 (ends at 480, incomplete period)
         ]
 
         aggregator.prefill_from_history("BTCUSDT", history)
 
-        # Buffer should have 3 klines (ready to complete on next minute 0)
+        # Buffer should have 3 klines (ready to complete on next minute 3, 4)
         assert len(aggregator._buffers["BTCUSDT"]["5m"].klines_1m) == 3
 
     @pytest.mark.asyncio

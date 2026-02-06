@@ -31,15 +31,29 @@ TIMEFRAME_MINUTES = {
 
 @dataclass
 class AggregationBuffer:
-    """Buffer for accumulating 1m klines for aggregation."""
+    """Buffer for accumulating 1m klines for aggregation.
+
+    Uses period boundary alignment to ensure correct aggregation
+    even after restarts or when there are gaps in the data.
+    """
 
     symbol: str
     timeframe: str
     period_minutes: int
     klines_1m: list[FastKline] = field(default_factory=list)
 
+    def _get_period_start(self, timestamp: float) -> float:
+        """Get the period start timestamp for a given kline timestamp."""
+        period_seconds = self.period_minutes * 60
+        return (int(timestamp) // period_seconds) * period_seconds
+
     def add(self, kline: FastKline) -> FastKline | None:
         """Add a 1m kline to the buffer.
+
+        Uses period boundary alignment:
+        - Checks if kline belongs to current period
+        - Aggregates when kline ends on period boundary
+        - Handles gaps by discarding incomplete periods
 
         Args:
             kline: A closed 1m kline
@@ -47,11 +61,39 @@ class AggregationBuffer:
         Returns:
             Aggregated kline if the period is complete, None otherwise
         """
+        period_seconds = self.period_minutes * 60
+
+        # Get the period this kline belongs to
+        kline_period_start = self._get_period_start(kline.timestamp)
+
+        # If buffer has klines from a different period, reset
+        if self.klines_1m:
+            first_period_start = self._get_period_start(self.klines_1m[0].timestamp)
+            if first_period_start != kline_period_start:
+                # New period started, discard old incomplete period
+                if len(self.klines_1m) < self.period_minutes:
+                    logger.debug(
+                        f"Discarding incomplete period for {self.symbol} {self.timeframe}: "
+                        f"had {len(self.klines_1m)}/{self.period_minutes} klines"
+                    )
+                self.klines_1m.clear()
+
         self.klines_1m.append(kline)
 
-        # Check if we have enough klines for this timeframe
-        if len(self.klines_1m) >= self.period_minutes:
-            return self._aggregate()
+        # Check if this kline ends on a period boundary
+        kline_end_time = kline.timestamp + 60
+        if int(kline_end_time) % period_seconds == 0:
+            # Period boundary reached
+            if len(self.klines_1m) == self.period_minutes:
+                # Complete period, aggregate
+                return self._aggregate()
+            else:
+                # Incomplete period (gap in data), discard and log
+                logger.warning(
+                    f"Incomplete period at boundary for {self.symbol} {self.timeframe}: "
+                    f"expected {self.period_minutes}, got {len(self.klines_1m)} klines"
+                )
+                self.klines_1m.clear()
 
         return None
 
@@ -300,6 +342,9 @@ class KlineAggregator:
         This should be called at startup to ensure aggregation is
         properly aligned from the first real-time kline.
 
+        Only prefills INCOMPLETE periods. If the last kline ends exactly
+        on a period boundary, the buffer stays empty (period already complete).
+
         Args:
             symbol: Trading pair symbol
             klines_1m: Historical 1m klines (must be closed, sorted by timestamp)
@@ -308,21 +353,38 @@ class KlineAggregator:
 
         for timeframe in self.target_timeframes:
             period_minutes = TIMEFRAME_MINUTES[timeframe]
+            period_seconds = period_minutes * 60
             buffer = self._buffers[symbol][timeframe]
             buffer.reset()
 
-            # Find the klines that belong to the current incomplete period
             if not klines_1m:
                 continue
 
-            # Get the period that the last kline belongs to
-            last_kline_timestamp = klines_1m[-1].timestamp
-            period_start = self._get_period_start(last_kline_timestamp, period_minutes)
+            # Check if the last kline ends on a period boundary
+            last_kline = klines_1m[-1]
+            last_kline_end_time = last_kline.timestamp + 60
 
-            # Add klines that belong to the current period
+            if int(last_kline_end_time) % period_seconds == 0:
+                # Last kline completes a period, buffer should be empty
+                # The completed period was already processed historically
+                logger.debug(
+                    f"Last kline for {symbol} {timeframe} ends on boundary, "
+                    f"buffer stays empty"
+                )
+                continue
+
+            # Get the period that the last kline belongs to
+            period_start = self._get_period_start(last_kline.timestamp, period_minutes)
+
+            # Add klines that belong to the current incomplete period
             for kline in klines_1m:
                 if kline.timestamp >= period_start:
                     buffer.klines_1m.append(kline)
+
+            logger.debug(
+                f"Prefilled {symbol} {timeframe} with {len(buffer.klines_1m)} klines "
+                f"(period starts at {period_start})"
+            )
 
         logger.info(
             f"Prefilled aggregation buffers for {symbol} with {len(klines_1m)} 1m klines"

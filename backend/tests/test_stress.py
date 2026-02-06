@@ -282,5 +282,5 @@ class TestMemoryStability:
                         assert tracker.active_count == 0
 
                         # Internal tracking dicts should be cleaned up
+                        # Note: _last_cache_update was removed as cache now syncs with DB
                         assert len(tracker._last_db_update) == 0
-                        assert len(tracker._last_cache_update) == 0

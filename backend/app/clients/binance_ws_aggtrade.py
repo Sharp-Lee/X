@@ -25,17 +25,19 @@ class BinanceAggTradeListener(WSListener):
         callbacks: dict[str, list[AggTradeCallback]],
         on_connected: Callable[[], None],
         on_disconnected: Callable[[], None],
+        loop: asyncio.AbstractEventLoop,
     ):
         self._callbacks = callbacks
         self._on_connected = on_connected
         self._on_disconnected = on_disconnected
         self._transport: WSTransport | None = None
-        self._loop: asyncio.AbstractEventLoop | None = None
+        # Store loop at init time to avoid race condition
+        # picows callbacks may run from different threads
+        self._loop = loop
 
     def on_ws_connected(self, transport: WSTransport):
         """Called when WebSocket connection is established."""
         self._transport = transport
-        self._loop = asyncio.get_event_loop()
         logger.info("picows: AggTrade WebSocket connected")
 
         # Subscribe to all registered streams
@@ -218,11 +220,16 @@ class BinanceAggTradeWebSocket:
         """Connect to WebSocket and wait for disconnection."""
         self._disconnected.clear()
 
+        # Capture event loop here (in async context) to pass to listener
+        # This ensures callbacks can schedule coroutines safely
+        loop = asyncio.get_running_loop()
+
         def listener_factory():
             self._listener = BinanceAggTradeListener(
                 callbacks=self._callbacks,
                 on_connected=self._on_connected,
                 on_disconnected=self._on_disconnected,
+                loop=loop,
             )
             return self._listener
 

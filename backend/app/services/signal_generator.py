@@ -1,6 +1,7 @@
 """Signal generator implementing the MSR Retest Capture strategy."""
 
 import logging
+import math
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -122,9 +123,34 @@ class LevelManager:
         price: Decimal,
         level: Decimal,
     ) -> bool:
-        """Check if price is touching a level within tolerance."""
+        """Check if price is touching a level within tolerance.
+
+        Note: This method is not used in the current MSR Retest Capture strategy,
+        which uses exact price comparison (low <= support) matching the Pine Script.
+        This method is available for alternative strategies that need tolerance-based
+        level detection.
+        """
         tolerance = level * self.touch_tolerance
         return abs(price - level) <= tolerance
+
+
+def _is_nan(value) -> bool:
+    """Check if a value is NaN (handles Decimal and float).
+
+    Args:
+        value: Value to check (Decimal, float, or None)
+
+    Returns:
+        True if value is NaN or None
+    """
+    if value is None:
+        return True
+    if isinstance(value, Decimal):
+        return value.is_nan()
+    if isinstance(value, float):
+        return math.isnan(value)
+    # For string comparison (legacy support)
+    return str(value) == "NaN"
 
 
 class SignalGenerator:
@@ -136,8 +162,12 @@ class SignalGenerator:
     - Downtrend (close < ema50) + Touch resistance + Bearish reversal → Long
 
     TP/SL:
-    - TP distance = ATR × 2
+    - TP distance = ATR × 2 (with math.max/min limits based on high/low)
     - SL distance = ATR × 2 × 4.42
+
+    Risk Management:
+    - Maximum risk per trade: 2.53% of equity
+    - Only one position per symbol at a time
     """
 
     MIN_SCORE_THRESHOLD = Decimal("1.0")
@@ -155,9 +185,13 @@ class SignalGenerator:
 
         self.tp_atr_mult = Decimal(str(settings.tp_atr_mult))
         self.sl_atr_mult = Decimal(str(settings.sl_atr_mult))
+        self.max_risk_percent = Decimal(str(settings.max_risk_percent))
 
         self._callbacks: list[SignalCallback] = []
         self._initialized = False
+
+        # Track active positions per symbol (Pine Script: strategy.position_size == 0)
+        self._active_positions: dict[str, bool] = {}
 
     async def init(self) -> None:
         """Initialize streak tracker from cache or database."""
@@ -185,6 +219,14 @@ class SignalGenerator:
                 f"losses={self.streak_tracker.total_losses}"
             )
 
+        # Load active positions from database
+        # Pine Script: strategy.position_size == 0 check
+        active_signals = await self.signal_repo.get_active()
+        for signal in active_signals:
+            symbol_key = f"{signal.symbol}_{signal.timeframe}"
+            self._active_positions[symbol_key] = True
+        logger.info(f"Loaded {len(active_signals)} active positions")
+
         self._initialized = True
 
     def on_signal(self, callback: SignalCallback) -> None:
@@ -196,13 +238,19 @@ class SignalGenerator:
         direction: Direction,
         entry_price: Decimal,
         atr_value: Decimal,
+        high: Decimal,
+        low: Decimal,
     ) -> tuple[Decimal, Decimal]:
         """
         Calculate take profit and stop loss prices.
 
         Strategy uses "wide stop, narrow take profit" design:
-        - TP distance = ATR × tp_mult (narrow)
+        - TP distance = ATR × tp_mult (narrow), with math.max/min limits
         - SL distance = ATR × sl_mult (wide, = tp_mult × 4.42)
+
+        Pine Script logic:
+        - LONG: tp = min(entry + tp_distance, high + atr)
+        - SHORT: tp = max(entry - tp_distance, low - atr)
 
         Returns:
             Tuple of (tp_price, sl_price)
@@ -211,13 +259,48 @@ class SignalGenerator:
         sl_distance = atr_value * self.sl_atr_mult
 
         if direction == Direction.LONG:
-            tp_price = entry_price + tp_distance
+            # Pine Script: math.min(entryPrice + narrowDistance, high + atr)
+            tp_raw = entry_price + tp_distance
+            tp_limit = high + atr_value
+            tp_price = min(tp_raw, tp_limit)
             sl_price = entry_price - sl_distance
         else:  # SHORT
-            tp_price = entry_price - tp_distance
+            # Pine Script: math.max(entryPrice - narrowDistance, low - atr)
+            tp_raw = entry_price - tp_distance
+            tp_limit = low - atr_value
+            tp_price = max(tp_raw, tp_limit)
             sl_price = entry_price + sl_distance
 
         return tp_price, sl_price
+
+    def _check_risk_management(
+        self,
+        entry_price: Decimal,
+        sl_price: Decimal,
+        equity: Decimal = Decimal("10000"),  # Default equity for signal generation
+    ) -> bool:
+        """
+        Check if trade meets risk management criteria.
+
+        Pine Script: riskAmount <= strategy.equity * i_maxRiskPercent / 100
+
+        For signal generation (without actual equity tracking), we use a default
+        equity value to validate the risk percentage constraint.
+
+        Args:
+            entry_price: Entry price
+            sl_price: Stop loss price
+            equity: Account equity (default 10000 for relative risk check)
+
+        Returns:
+            True if risk is within limits, False otherwise
+        """
+        risk_distance = abs(entry_price - sl_price)
+        # Risk as percentage of entry price (proxy for position-based risk)
+        risk_percent = (risk_distance / entry_price) * Decimal("100")
+
+        # Check if risk is within max_risk_percent
+        return risk_percent <= self.max_risk_percent
 
     def detect_signal(
         self,
@@ -245,18 +328,28 @@ class SignalGenerator:
 
         ema50 = indicators["ema50"]
         atr_value = indicators["atr"]
+        fib_382 = indicators["fib_382"]
+        fib_500 = indicators["fib_500"]
+        fib_618 = indicators["fib_618"]
+        vwap_value = indicators["vwap"]
 
-        # Skip if indicators not ready
-        if str(ema50) == "NaN" or str(atr_value) == "NaN":
+        # Skip if any indicator is NaN (not enough data)
+        if any(_is_nan(v) for v in [ema50, atr_value, fib_382, fib_500, fib_618, vwap_value]):
             return None
 
-        # Get support/resistance levels
+        # Pine Script: strategy.position_size == 0
+        # Only allow one active position per symbol
+        symbol_key = f"{kline.symbol}_{kline.timeframe}"
+        if self._active_positions.get(symbol_key, False):
+            return None
+
+        # Get support/resistance levels (using already validated indicators)
         support_levels, resistance_levels = self.level_manager.get_levels(
             close,
-            indicators["fib_382"],
-            indicators["fib_500"],
-            indicators["fib_618"],
-            indicators["vwap"],
+            fib_382,
+            fib_500,
+            fib_618,
+            vwap_value,
         )
 
         # Get nearest levels
@@ -293,8 +386,16 @@ class SignalGenerator:
             touched_support = low <= nearest_support or prev_low <= nearest_support
             if touched_support and is_bullish:
                 tp_price, sl_price = self.calculate_tp_sl(
-                    Direction.SHORT, close, atr_value
+                    Direction.SHORT, close, atr_value, high, low
                 )
+
+                # Pine Script: riskAmount <= strategy.equity * i_maxRiskPercent / 100
+                if not self._check_risk_management(close, sl_price):
+                    logger.debug(
+                        f"SHORT signal rejected: risk exceeds {self.max_risk_percent}%"
+                    )
+                    return None
+
                 signal = SignalRecord(
                     symbol=kline.symbol,
                     timeframe=kline.timeframe,
@@ -325,8 +426,16 @@ class SignalGenerator:
             )
             if touched_resistance and is_bearish:
                 tp_price, sl_price = self.calculate_tp_sl(
-                    Direction.LONG, close, atr_value
+                    Direction.LONG, close, atr_value, high, low
                 )
+
+                # Pine Script: riskAmount <= strategy.equity * i_maxRiskPercent / 100
+                if not self._check_risk_management(close, sl_price):
+                    logger.debug(
+                        f"LONG signal rejected: risk exceeds {self.max_risk_percent}%"
+                    )
+                    return None
+
                 signal = SignalRecord(
                     symbol=kline.symbol,
                     timeframe=kline.timeframe,
@@ -394,10 +503,26 @@ class SignalGenerator:
         signal = self.detect_signal(kline, prev_kline, indicators)
 
         if signal:
-            # Save to database
-            await self.signal_repo.save(signal)
+            symbol_key = f"{signal.symbol}_{signal.timeframe}"
 
-            # Notify callbacks
+            # Save to database FIRST - if this fails, don't mark as active
+            # This ensures _active_positions stays in sync with actual DB state
+            try:
+                await self.signal_repo.save(signal)
+            except Exception as e:
+                logger.error(
+                    f"Failed to save signal {signal.id} to database: {e}. "
+                    "Signal will NOT be tracked."
+                )
+                # Don't mark as active, don't notify callbacks
+                # Signal will be regenerated on next matching kline if conditions persist
+                return ProcessKlineResult(signal=None, atr=atr_value)
+
+            # Mark position as active only after successful save
+            # (Pine Script: strategy.position_size != 0)
+            self._active_positions[symbol_key] = True
+
+            # Notify callbacks (PositionTracker.add_signal, WebSocket broadcast)
             for callback in self._callbacks:
                 try:
                     await callback(signal)
@@ -406,12 +531,38 @@ class SignalGenerator:
 
         return ProcessKlineResult(signal=signal, atr=atr_value)
 
-    async def record_outcome(self, outcome: Outcome) -> None:
-        """Record a signal outcome and update streak tracker."""
+    async def record_outcome(
+        self, outcome: Outcome, symbol: str | None = None, timeframe: str | None = None
+    ) -> None:
+        """Record a signal outcome and update streak tracker.
+
+        Args:
+            outcome: The outcome (TP or SL)
+            symbol: Symbol of the closed position (to release position lock)
+            timeframe: Timeframe of the closed position
+        """
         self.streak_tracker.record_outcome(outcome)
         # Save to cache
         await streak_cache.save_streak(self.streak_tracker)
+
+        # Release position lock (Pine Script: allow new position after close)
+        if symbol and timeframe:
+            symbol_key = f"{symbol}_{timeframe}"
+            if symbol_key in self._active_positions:
+                del self._active_positions[symbol_key]
+                logger.debug(f"Released position lock for {symbol_key}")
+
         logger.debug(
             f"Updated streak: {self.streak_tracker.current_streak} "
             f"(wins={self.streak_tracker.total_wins}, losses={self.streak_tracker.total_losses})"
         )
+
+    def release_position(self, symbol: str, timeframe: str) -> None:
+        """Release position lock for a symbol/timeframe combination.
+
+        Call this when a position is closed externally (e.g., by position tracker).
+        """
+        symbol_key = f"{symbol}_{timeframe}"
+        if symbol_key in self._active_positions:
+            del self._active_positions[symbol_key]
+            logger.debug(f"Released position lock for {symbol_key}")

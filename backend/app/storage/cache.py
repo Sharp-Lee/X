@@ -50,7 +50,7 @@ async def init_cache() -> None:
     settings = get_settings()
     _pool = ConnectionPool.from_url(
         settings.redis_url,
-        max_connections=20,
+        max_connections=50,  # Increased for high-frequency updates
         decode_responses=False,  # We handle encoding ourselves with orjson
     )
     _client = redis.Redis(connection_pool=_pool)

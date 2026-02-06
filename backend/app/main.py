@@ -38,7 +38,7 @@ from app.config import get_settings
 from app.core import is_talib_available
 from app.models import Outcome, SignalRecord
 from app.services import DataCollector, SignalGenerator, PositionTracker
-from app.storage import init_database, cache
+from app.storage import init_database, cache, price_cache
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +46,21 @@ logger = logging.getLogger(__name__)
 data_collector: DataCollector | None = None
 signal_generator: SignalGenerator | None = None
 position_tracker: PositionTracker | None = None
+_price_flush_task: asyncio.Task | None = None
+
+
+async def _periodic_price_flush():
+    """Background task to periodically flush price cache."""
+    while True:
+        try:
+            await asyncio.sleep(2.0)  # Flush every 2 seconds
+            await price_cache.flush_pending_prices()
+        except asyncio.CancelledError:
+            # Final flush on shutdown
+            await price_cache.flush_pending_prices()
+            break
+        except Exception as e:
+            logger.warning(f"Price cache flush error: {e}")
 
 
 async def on_new_signal(signal: SignalRecord) -> None:
@@ -70,9 +85,13 @@ async def on_new_signal(signal: SignalRecord) -> None:
 
 async def on_outcome(signal: SignalRecord, outcome: Outcome) -> None:
     """Handle signal outcome (TP/SL hit)."""
-    # Update streak tracker
+    # Update streak tracker and release position lock
     if signal_generator:
-        await signal_generator.record_outcome(outcome)
+        await signal_generator.record_outcome(
+            outcome,
+            symbol=signal.symbol,
+            timeframe=signal.timeframe,
+        )
 
     # Broadcast via WebSocket
     await manager.send_outcome(
@@ -88,6 +107,10 @@ async def on_kline_update(kline) -> None:
     This is called for both raw 1m klines and aggregated klines (3m, 5m, 15m, 30m).
     """
     if not signal_generator or not data_collector:
+        return
+
+    # Skip processing during replay (replay service handles signal generation)
+    if data_collector.is_replaying or data_collector.is_buffering:
         return
 
     # Get buffer for the specific timeframe of this kline
@@ -144,17 +167,34 @@ async def lifespan(app: FastAPI):
     data_collector.on_kline(on_kline_update)
     data_collector.on_aggtrade(on_aggtrade_update)
 
+    # Connect signal generator to data collector for replay processing
+    data_collector.set_signal_generator(signal_generator)
+
     # Load active signals
     await position_tracker.load_active_signals()
 
-    # Start data collection
+    # Start data collection (includes gap detection, backfill, and replay)
     await data_collector.start()
     logger.info("Data collection started")
+
+    # Start background price cache flush task
+    global _price_flush_task
+    _price_flush_task = asyncio.create_task(_periodic_price_flush())
+    logger.info("Price cache flush task started")
 
     yield
 
     # Shutdown
     logger.info("Shutting down...")
+
+    # Stop background tasks
+    if _price_flush_task:
+        _price_flush_task.cancel()
+        try:
+            await _price_flush_task
+        except asyncio.CancelledError:
+            pass
+
     if data_collector:
         await data_collector.stop()
     await cache.close_cache()
