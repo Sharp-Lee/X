@@ -38,7 +38,7 @@ from app.config import get_settings
 from app.core import is_talib_available
 from app.models import Outcome, SignalRecord
 from app.services import DataCollector, SignalGenerator, PositionTracker
-from app.storage import init_database, cache, price_cache
+from app.storage import init_database, get_database, cache, price_cache
 
 logger = logging.getLogger(__name__)
 
@@ -136,51 +136,80 @@ async def on_aggtrade_update(trade) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
-    global data_collector, signal_generator, position_tracker
+    global data_collector, signal_generator, position_tracker, _price_flush_task
 
     logger.info("Starting MSR Retest Capture system...")
     logger.info(f"Event loop: {'uvloop' if _UVLOOP_ENABLED else 'asyncio'}")
     logger.info(f"Indicators: {'TA-Lib' if is_talib_available() else 'NumPy fallback'}")
 
-    # Initialize database
-    await init_database()
-    logger.info("Database initialized")
+    # Track initialization state for proper cleanup on failure
+    db_initialized = False
+    cache_initialized = False
+    services_started = False
 
-    # Initialize Redis cache
-    await cache.init_cache()
-    if cache.is_cache_available():
-        logger.info("Redis cache initialized")
-    else:
-        logger.warning("Redis cache unavailable - running without caching")
+    try:
+        # Initialize database
+        await init_database()
+        db_initialized = True
+        logger.info("Database initialized")
 
-    # Initialize services
-    data_collector = DataCollector()
-    signal_generator = SignalGenerator()
-    position_tracker = PositionTracker()
+        # Initialize Redis cache
+        await cache.init_cache()
+        cache_initialized = True
+        if cache.is_cache_available():
+            logger.info("Redis cache initialized")
+        else:
+            logger.warning("Redis cache unavailable - running without caching")
 
-    # Load streak tracker from cache
-    await signal_generator.init()
+        # Initialize services
+        data_collector = DataCollector()
+        signal_generator = SignalGenerator()
+        position_tracker = PositionTracker()
 
-    # Register callbacks
-    signal_generator.on_signal(on_new_signal)
-    position_tracker.on_outcome(on_outcome)
-    data_collector.on_kline(on_kline_update)
-    data_collector.on_aggtrade(on_aggtrade_update)
+        # Load streak tracker from cache
+        await signal_generator.init()
 
-    # Connect signal generator to data collector for replay processing
-    data_collector.set_signal_generator(signal_generator)
+        # Register callbacks
+        signal_generator.on_signal(on_new_signal)
+        position_tracker.on_outcome(on_outcome)
+        data_collector.on_kline(on_kline_update)
+        data_collector.on_aggtrade(on_aggtrade_update)
 
-    # Load active signals
-    await position_tracker.load_active_signals()
+        # Connect signal generator to data collector for replay processing
+        data_collector.set_signal_generator(signal_generator)
 
-    # Start data collection (includes gap detection, backfill, and replay)
-    await data_collector.start()
-    logger.info("Data collection started")
+        # Load active signals
+        await position_tracker.load_active_signals()
 
-    # Start background price cache flush task
-    global _price_flush_task
-    _price_flush_task = asyncio.create_task(_periodic_price_flush())
-    logger.info("Price cache flush task started")
+        # Start data collection (includes gap detection, backfill, and replay)
+        await data_collector.start()
+        services_started = True
+        logger.info("Data collection started")
+
+        # Start background price cache flush task
+        _price_flush_task = asyncio.create_task(_periodic_price_flush())
+        logger.info("Price cache flush task started")
+
+    except Exception as e:
+        logger.error(f"Startup failed: {e}")
+        # Cleanup on startup failure
+        if services_started and data_collector:
+            try:
+                await data_collector.stop()
+            except Exception as cleanup_err:
+                logger.warning(f"Error stopping data collector: {cleanup_err}")
+        if cache_initialized:
+            try:
+                await cache.close_cache()
+            except Exception as cleanup_err:
+                logger.warning(f"Error closing cache: {cleanup_err}")
+        if db_initialized:
+            try:
+                db = get_database()
+                await db.close()
+            except Exception as cleanup_err:
+                logger.warning(f"Error closing database: {cleanup_err}")
+        raise  # Re-raise to prevent app from starting in broken state
 
     yield
 
@@ -195,9 +224,21 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
 
+    # Stop data collector
     if data_collector:
         await data_collector.stop()
+
+    # Close Redis cache
     await cache.close_cache()
+
+    # Close database connections
+    try:
+        db = get_database()
+        await db.close()
+        logger.info("Database connections closed")
+    except Exception as e:
+        logger.warning(f"Error closing database: {e}")
+
     logger.info("Shutdown complete")
 
 
