@@ -34,8 +34,19 @@ export function useSignals(symbol?: string) {
   // Handle new signal from WebSocket
   const handleNewSignal = useCallback((data: Record<string, unknown>) => {
     const signal = data as unknown as Signal;
-    setSignals((prev) => [signal, ...prev.slice(0, 49)]);
-    setActiveSignals((prev) => [signal, ...prev]);
+    // Prevent duplicates - check if signal already exists
+    setSignals((prev) => {
+      if (prev.some((s) => s.id === signal.id)) {
+        return prev;
+      }
+      return [signal, ...prev.slice(0, 49)];
+    });
+    setActiveSignals((prev) => {
+      if (prev.some((s) => s.id === signal.id)) {
+        return prev;
+      }
+      return [signal, ...prev];
+    });
   }, []);
 
   // Handle MAE update from WebSocket
