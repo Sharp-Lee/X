@@ -2,10 +2,10 @@
  * Hook for managing signals state with real-time updates.
  */
 
-import { useState, useEffect, useCallback } from 'react';
-import { api } from '../services/api';
-import type { Signal } from '../services/api';
-import { useWebSocket } from './useWebSocket';
+import { useState, useEffect, useCallback } from 'react'
+import { api } from '@/services/api'
+import type { Signal } from '@/services/api'
+import { useWebSocket } from '@/hooks/useWebSocket'
 
 export function useSignals(symbol?: string) {
   const [signals, setSignals] = useState<Signal[]>([]);

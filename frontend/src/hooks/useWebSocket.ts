@@ -24,9 +24,20 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
   const [lastMessage, setLastMessage] = useState<WSMessage | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
+  const isUnmountingRef = useRef(false);
+  // Store options in ref to avoid re-creating connect callback
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
 
   const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
+    // Don't connect if unmounting
+    if (isUnmountingRef.current) {
+      return;
+    }
+
+    // Prevent multiple connections
+    if (wsRef.current?.readyState === WebSocket.OPEN ||
+        wsRef.current?.readyState === WebSocket.CONNECTING) {
       return;
     }
 
@@ -37,18 +48,24 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
       setIsConnected(true);
     };
 
-    ws.onclose = () => {
-      console.log('WebSocket disconnected');
+    ws.onclose = (event) => {
+      console.log('WebSocket disconnected', event.code);
       setIsConnected(false);
+      wsRef.current = null;
 
-      // Reconnect after delay
-      reconnectTimeoutRef.current = window.setTimeout(() => {
-        connect();
-      }, 3000);
+      // Only reconnect if not intentionally closed and not unmounting
+      if (!isUnmountingRef.current && event.code !== 1000) {
+        reconnectTimeoutRef.current = window.setTimeout(() => {
+          connect();
+        }, 3000);
+      }
     };
 
-    ws.onerror = (error) => {
-      console.error('WebSocket error:', error);
+    ws.onerror = () => {
+      // Don't log error if we're unmounting (expected during StrictMode)
+      if (!isUnmountingRef.current) {
+        console.warn('WebSocket connection error');
+      }
     };
 
     ws.onmessage = (event) => {
@@ -56,18 +73,20 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
         const message: WSMessage = JSON.parse(event.data);
         setLastMessage(message);
 
+        // Use ref to get current options without re-creating callback
+        const opts = optionsRef.current;
         switch (message.type) {
           case 'signal':
-            options.onSignal?.(message.data);
+            opts.onSignal?.(message.data);
             break;
           case 'mae_update':
-            options.onMaeUpdate?.(message.data as { signal_id: string; mae_ratio: number; mfe_ratio: number });
+            opts.onMaeUpdate?.(message.data as { signal_id: string; mae_ratio: number; mfe_ratio: number });
             break;
           case 'outcome':
-            options.onOutcome?.(message.data as { signal_id: string; outcome: string; exit_price: number });
+            opts.onOutcome?.(message.data as { signal_id: string; outcome: string; exit_price: number });
             break;
           case 'status':
-            options.onStatus?.(message.data);
+            opts.onStatus?.(message.data);
             break;
           case 'ping':
             ws.send(JSON.stringify({ type: 'pong', data: {} }));
@@ -79,16 +98,22 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     };
 
     wsRef.current = ws;
-  }, [options]);
+  }, []); // No dependencies - stable callback
 
   useEffect(() => {
+    isUnmountingRef.current = false;
     connect();
 
     return () => {
+      isUnmountingRef.current = true;
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
       }
-      wsRef.current?.close();
+      if (wsRef.current) {
+        wsRef.current.close(1000, 'Component unmounting');
+        wsRef.current = null;
+      }
     };
   }, [connect]);
 
