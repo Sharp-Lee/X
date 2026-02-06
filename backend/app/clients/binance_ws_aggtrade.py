@@ -158,15 +158,37 @@ class BinanceAggTradeWebSocket:
         Args:
             symbol: Trading pair (e.g., "BTCUSDT")
             callback: Async function to call with each AggTrade update
+
+        Note: Duplicate callbacks are ignored to prevent accumulation on reconnect.
         """
         stream_name = f"{symbol.lower()}@aggTrade"
         if stream_name not in self._callbacks:
             self._callbacks[stream_name] = []
-        self._callbacks[stream_name].append(callback)
+
+        # Prevent duplicate callbacks (same callback object)
+        if callback not in self._callbacks[stream_name]:
+            self._callbacks[stream_name].append(callback)
 
         # Send subscribe message if already connected
         if self._listener and self._connected.is_set():
             self._listener.send_subscribe([stream_name])
+
+    def unsubscribe(self, symbol: str, callback: AggTradeCallback | None = None) -> None:
+        """
+        Unsubscribe from aggregated trade updates.
+
+        Args:
+            symbol: Trading pair
+            callback: Specific callback to remove, or None to remove all
+        """
+        stream_name = f"{symbol.lower()}@aggTrade"
+        if stream_name in self._callbacks:
+            if callback is None:
+                del self._callbacks[stream_name]
+            elif callback in self._callbacks[stream_name]:
+                self._callbacks[stream_name].remove(callback)
+                if not self._callbacks[stream_name]:
+                    del self._callbacks[stream_name]
 
     async def start(self) -> None:
         """Start the WebSocket connection and message processing."""

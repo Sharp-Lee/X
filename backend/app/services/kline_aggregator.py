@@ -41,6 +41,8 @@ class AggregationBuffer:
     timeframe: str
     period_minutes: int
     klines_1m: list[FastKline] = field(default_factory=list)
+    # Maximum buffer size to prevent unbounded growth (2x period size for safety)
+    max_size: int = field(default=60)
 
     def _get_period_start(self, timestamp: float) -> float:
         """Get the period start timestamp for a given kline timestamp."""
@@ -79,6 +81,15 @@ class AggregationBuffer:
                 self.klines_1m.clear()
 
         self.klines_1m.append(kline)
+
+        # Enforce maximum buffer size to prevent unbounded growth
+        if len(self.klines_1m) > self.max_size:
+            overflow = len(self.klines_1m) - self.max_size
+            self.klines_1m = self.klines_1m[overflow:]
+            logger.debug(
+                f"Buffer overflow for {self.symbol} {self.timeframe}: "
+                f"trimmed {overflow} old klines"
+            )
 
         # Check if this kline ends on a period boundary
         kline_end_time = kline.timestamp + 60
@@ -171,8 +182,22 @@ class KlineAggregator:
 
         Args:
             callback: Async function called with each aggregated kline
+
+        Note: Duplicate callbacks are ignored.
         """
-        self._callbacks.append(callback)
+        if callback not in self._callbacks:
+            self._callbacks.append(callback)
+
+    def off_aggregated_kline(
+        self, callback: Callable[[FastKline], Awaitable[None]]
+    ) -> None:
+        """Unregister a callback for aggregated klines.
+
+        Args:
+            callback: The callback to remove
+        """
+        if callback in self._callbacks:
+            self._callbacks.remove(callback)
 
     def _ensure_buffers(self, symbol: str) -> None:
         """Ensure buffers exist for a symbol."""

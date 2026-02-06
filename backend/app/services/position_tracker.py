@@ -82,8 +82,17 @@ class PositionTracker:
         self._cache_misses = 0
 
     def on_outcome(self, callback: OutcomeCallback) -> None:
-        """Register callback for outcome events (TP/SL hit)."""
-        self._outcome_callbacks.append(callback)
+        """Register callback for outcome events (TP/SL hit).
+
+        Note: Duplicate callbacks are ignored.
+        """
+        if callback not in self._outcome_callbacks:
+            self._outcome_callbacks.append(callback)
+
+    def off_outcome(self, callback: OutcomeCallback) -> None:
+        """Unregister callback for outcome events."""
+        if callback in self._outcome_callbacks:
+            self._outcome_callbacks.remove(callback)
 
     async def load_active_signals(self) -> None:
         """Load all active signals from cache or database.

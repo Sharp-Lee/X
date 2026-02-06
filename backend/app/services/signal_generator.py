@@ -230,8 +230,17 @@ class SignalGenerator:
         self._initialized = True
 
     def on_signal(self, callback: SignalCallback) -> None:
-        """Register callback for new signals."""
-        self._callbacks.append(callback)
+        """Register callback for new signals.
+
+        Note: Duplicate callbacks are ignored.
+        """
+        if callback not in self._callbacks:
+            self._callbacks.append(callback)
+
+    def off_signal(self, callback: SignalCallback) -> None:
+        """Unregister callback for new signals."""
+        if callback in self._callbacks:
+            self._callbacks.remove(callback)
 
     def calculate_tp_sl(
         self,

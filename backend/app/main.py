@@ -39,6 +39,10 @@ from app.core import is_talib_available
 from app.models import Outcome, SignalRecord
 from app.services import DataCollector, SignalGenerator, PositionTracker
 from app.storage import init_database, get_database, cache, price_cache
+from app.storage import ProcessingStateRepository
+
+# Startup timeout in seconds
+STARTUP_TIMEOUT = 120
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +137,32 @@ async def on_aggtrade_update(trade) -> None:
         await position_tracker.process_trade(trade)
 
 
+async def recover_pending_states() -> None:
+    """Recover from crashed replay states.
+
+    If the system crashed during replay, processing_state entries
+    will be stuck in 'pending' status. This function detects and
+    recovers from such states by marking them as confirmed.
+
+    The next startup will detect gaps from last_processed_time and
+    re-run the replay properly.
+    """
+    repo = ProcessingStateRepository()
+    pending_states = await repo.get_pending_states()
+
+    if pending_states:
+        logger.warning(
+            f"Found {len(pending_states)} pending states from crashed replay"
+        )
+        for state in pending_states:
+            logger.info(
+                f"Recovering {state.symbol}/{state.timeframe}: "
+                f"marking pending -> confirmed at {state.last_processed_time}"
+            )
+            await repo.mark_confirmed(state.symbol, state.timeframe)
+        logger.info("Pending states recovered - gaps will be re-detected on startup")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
@@ -148,18 +178,28 @@ async def lifespan(app: FastAPI):
     services_started = False
 
     try:
-        # Initialize database
-        await init_database()
-        db_initialized = True
-        logger.info("Database initialized")
+        # Initialize database with timeout
+        try:
+            await asyncio.wait_for(init_database(), timeout=30)
+            db_initialized = True
+            logger.info("Database initialized")
+        except asyncio.TimeoutError:
+            raise RuntimeError("Database initialization timed out after 30s")
 
-        # Initialize Redis cache
-        await cache.init_cache()
-        cache_initialized = True
-        if cache.is_cache_available():
-            logger.info("Redis cache initialized")
-        else:
-            logger.warning("Redis cache unavailable - running without caching")
+        # Recover from any crashed replay states
+        await recover_pending_states()
+
+        # Initialize Redis cache with timeout
+        try:
+            await asyncio.wait_for(cache.init_cache(), timeout=10)
+            cache_initialized = True
+            if cache.is_cache_available():
+                logger.info("Redis cache initialized")
+            else:
+                logger.warning("Redis cache unavailable - running without caching")
+        except asyncio.TimeoutError:
+            logger.warning("Redis cache initialization timed out - running without caching")
+            cache_initialized = True  # Mark as initialized to skip cleanup
 
         # Initialize services
         data_collector = DataCollector()
@@ -181,10 +221,13 @@ async def lifespan(app: FastAPI):
         # Load active signals
         await position_tracker.load_active_signals()
 
-        # Start data collection (includes gap detection, backfill, and replay)
-        await data_collector.start()
-        services_started = True
-        logger.info("Data collection started")
+        # Start data collection with timeout (includes gap detection, backfill, and replay)
+        try:
+            await asyncio.wait_for(data_collector.start(), timeout=STARTUP_TIMEOUT)
+            services_started = True
+            logger.info("Data collection started")
+        except asyncio.TimeoutError:
+            raise RuntimeError(f"Data collection startup timed out after {STARTUP_TIMEOUT}s")
 
         # Start background price cache flush task
         _price_flush_task = asyncio.create_task(_periodic_price_flush())
