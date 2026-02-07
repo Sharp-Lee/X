@@ -23,14 +23,14 @@ from app.models import (
     FastSignal,
     FastTrade,
 )
-from app.models.converters import (
+from app.models import (
     signal_to_fast,
     fast_to_signal,
     aggtrade_to_fast,
     kline_to_fast,
 )
 from app.services.position_tracker import PositionTracker
-from app.services.signal_generator import SignalGenerator
+from core.signal_generator import SignalGenerator
 
 
 class TestDataFlowIntegration:

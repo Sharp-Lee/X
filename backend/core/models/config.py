@@ -23,6 +23,9 @@ class StrategyConfig(BaseModel):
     tp_atr_mult: Decimal = Decimal("2.0")
     sl_atr_mult: Decimal = Decimal("8.84")  # 2 * 4.42
 
+    # Risk management
+    max_risk_percent: Decimal = Decimal("2.53")  # Max risk per trade as % of equity
+
     # Tolerance for price touching levels (as percentage)
     touch_tolerance: Decimal = Decimal("0.001")  # 0.1%
 

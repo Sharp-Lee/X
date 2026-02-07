@@ -14,7 +14,7 @@ import numpy as np
 
 # Try to import TA-Lib implementations
 try:
-    from app.core.talib_indicators import (
+    from core.indicators.talib_indicators import (
         ema as _talib_ema,
         sma as _talib_sma,
         atr as _talib_atr,

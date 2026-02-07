@@ -12,7 +12,7 @@ from app.models import (
     SignalRecord,
     StreakTracker,
 )
-from app.services.signal_generator import LevelManager
+from core.signal_generator import LevelManager
 
 
 class TestSignalRecord:

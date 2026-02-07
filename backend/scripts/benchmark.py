@@ -28,7 +28,7 @@ from app.models import (
     FastSignal,
     FastTrade,
 )
-from app.models.converters import (
+from core.models.converters import (
     signal_to_fast,
     fast_to_signal,
     aggtrade_to_fast,

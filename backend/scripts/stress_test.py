@@ -31,7 +31,7 @@ from app.models import (
     FastSignal,
     FastTrade,
 )
-from app.models.converters import signal_to_fast, aggtrade_to_fast
+from core.models.converters import signal_to_fast, aggtrade_to_fast
 from app.services.position_tracker import PositionTracker
 
 

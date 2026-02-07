@@ -23,7 +23,7 @@ from app.config import get_settings
 from app.models import Kline, KlineBuffer, AggTrade, FastKline, ProcessingState, kline_to_fast, fast_to_kline
 from app.storage import KlineRepository, AggTradeRepository, ProcessingStateRepository
 from app.storage import price_cache
-from app.services.kline_aggregator import KlineAggregator, TIMEFRAME_MINUTES
+from core.kline_aggregator import KlineAggregator, TIMEFRAME_MINUTES
 from app.services.kline_replay import KlineReplayService
 
 logger = logging.getLogger(__name__)

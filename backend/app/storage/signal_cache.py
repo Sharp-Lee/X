@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 import orjson
 
 from app.storage import cache
-from app.models.fast import FastSignal
+from core.models.fast import FastSignal
 
 if TYPE_CHECKING:
     pass

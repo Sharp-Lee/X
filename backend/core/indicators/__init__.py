@@ -1,6 +1,6 @@
-"""Core modules - re-exported from core.indicators for backwards compatibility."""
+"""Technical indicators (pure math, no I/O)."""
 
-from core.indicators import (
+from core.indicators.indicators import (
     ema,
     sma,
     atr,

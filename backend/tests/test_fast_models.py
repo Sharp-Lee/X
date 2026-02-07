@@ -1,7 +1,7 @@
 """Tests for hot path (fast) models."""
 
 import pytest
-from app.models.fast import (
+from core.models.fast import (
     FastKline,
     FastTrade,
     FastSignal,

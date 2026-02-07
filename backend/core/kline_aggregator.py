@@ -15,7 +15,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Callable, Awaitable
 
-from app.models import FastKline
+from core.models import FastKline
 
 logger = logging.getLogger(__name__)
 

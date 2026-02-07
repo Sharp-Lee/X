@@ -19,7 +19,7 @@ from app.models import (
     DIRECTION_LONG,
     DIRECTION_SHORT,
 )
-from app.models.converters import (
+from core.models.converters import (
     kline_to_fast,
     fast_to_kline,
     kline_buffer_to_fast,

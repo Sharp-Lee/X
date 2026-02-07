@@ -33,13 +33,16 @@ try:
 except ImportError:
     _UVLOOP_ENABLED = False
 
+from decimal import Decimal
+
 from app.api import router, manager, websocket_endpoint
 from app.config import get_settings
 from app.core import is_talib_available
-from app.models import Outcome, SignalRecord
+from app.models import Outcome, SignalRecord, StrategyConfig
 from app.services import DataCollector, SignalGenerator, PositionTracker
 from app.storage import init_database, get_database, cache, price_cache
-from app.storage import ProcessingStateRepository
+from app.storage import ProcessingStateRepository, SignalRepository
+from app.storage import streak_cache
 
 # Startup timeout in seconds
 STARTUP_TIMEOUT = 120
@@ -202,11 +205,28 @@ async def lifespan(app: FastAPI):
             cache_initialized = True  # Mark as initialized to skip cleanup
 
         # Initialize services
+        settings = get_settings()
+        config = StrategyConfig(
+            ema_period=settings.ema_period,
+            fib_period=settings.fib_period,
+            atr_period=settings.atr_period,
+            tp_atr_mult=Decimal(str(settings.tp_atr_mult)),
+            sl_atr_mult=Decimal(str(settings.sl_atr_mult)),
+            max_risk_percent=Decimal(str(settings.max_risk_percent)),
+        )
+        signal_repo = SignalRepository()
+
         data_collector = DataCollector()
-        signal_generator = SignalGenerator()
+        signal_generator = SignalGenerator(
+            config=config,
+            save_signal=signal_repo.save,
+            save_streak=streak_cache.save_streak,
+            load_streaks=streak_cache.load_all_streaks,
+            load_active_signals=signal_repo.get_active,
+        )
         position_tracker = PositionTracker()
 
-        # Load streak tracker from cache
+        # Load streak trackers and active positions
         await signal_generator.init()
 
         # Register callbacks

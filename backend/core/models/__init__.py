@@ -1,4 +1,4 @@
-"""Data models - re-exported from core.models for backwards compatibility."""
+"""Data models (pure data structures, no I/O)."""
 
 from core.models.kline import Kline, KlineBuffer
 from core.models.signal import (

@@ -16,7 +16,7 @@ Conversion functions handle the transformation between these representations.
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from app.models.fast import (
+from core.models.fast import (
     FastKline,
     FastTrade,
     FastSignal,
@@ -24,8 +24,8 @@ from app.models.fast import (
     DIRECTION_LONG,
     DIRECTION_SHORT,
 )
-from app.models.kline import Kline, KlineBuffer
-from app.models.signal import AggTrade, Direction, Outcome, SignalRecord
+from core.models.kline import Kline, KlineBuffer
+from core.models.signal import AggTrade, Direction, Outcome, SignalRecord
 
 
 # =============================================================================

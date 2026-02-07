@@ -3,7 +3,7 @@
 import pytest
 from decimal import Decimal
 
-from app.core.indicators import (
+from core.indicators import (
     ema,
     sma,
     atr,

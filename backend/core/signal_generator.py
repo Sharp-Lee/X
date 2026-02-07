@@ -1,15 +1,18 @@
-"""Signal generator implementing the MSR Retest Capture strategy."""
+"""Signal generator implementing the MSR Retest Capture strategy.
+
+This module is pure business logic with no I/O dependencies.
+All persistence operations are injected via callbacks, making it
+usable by both the live trading system and the backtesting system.
+"""
 
 import logging
 import math
 from dataclasses import dataclass
-from datetime import datetime
 from decimal import Decimal
 from typing import Callable, Awaitable
 
-from app.config import get_settings
-from app.core import IndicatorCalculator
-from app.models import (
+from core.indicators import IndicatorCalculator
+from core.models import (
     Direction,
     Kline,
     KlineBuffer,
@@ -17,13 +20,16 @@ from app.models import (
     SignalRecord,
     StreakTracker,
 )
-from app.storage import SignalRepository
-from app.storage import streak_cache
+from core.models.config import StrategyConfig
 
 logger = logging.getLogger(__name__)
 
-# Type alias for signal callback
+# Type aliases for callbacks
 SignalCallback = Callable[[SignalRecord], Awaitable[None]]
+SaveSignalCallback = Callable[[SignalRecord], Awaitable[None]]
+SaveStreakCallback = Callable[[str, str, StreakTracker], Awaitable[None]]
+LoadStreaksCallback = Callable[[], Awaitable[dict[str, StreakTracker]]]
+LoadActiveSignalsCallback = Callable[[], Awaitable[list[SignalRecord]]]
 
 
 @dataclass
@@ -168,24 +174,42 @@ class SignalGenerator:
     Risk Management:
     - Maximum risk per trade: 2.53% of equity
     - Only one position per symbol at a time
+
+    All I/O operations are injected via callbacks:
+    - save_signal: Persist a new signal (e.g., to database)
+    - save_streak: Persist streak tracker state (e.g., to Redis)
+    - load_streaks: Load all streak trackers at startup
+    - load_active_signals: Load active (open) signals at startup
     """
 
     MIN_SCORE_THRESHOLD = Decimal("1.0")
 
-    def __init__(self):
-        settings = get_settings()
+    def __init__(
+        self,
+        config: StrategyConfig,
+        save_signal: SaveSignalCallback | None = None,
+        save_streak: SaveStreakCallback | None = None,
+        load_streaks: LoadStreaksCallback | None = None,
+        load_active_signals: LoadActiveSignalsCallback | None = None,
+    ):
+        self.config = config
         self.indicator_calc = IndicatorCalculator(
-            ema_period=settings.ema_period,
-            fib_period=settings.fib_period,
-            atr_period=settings.atr_period,
+            ema_period=config.ema_period,
+            fib_period=config.fib_period,
+            atr_period=config.atr_period,
         )
-        self.level_manager = LevelManager()
+        self.level_manager = LevelManager(touch_tolerance=config.touch_tolerance)
         self._streak_trackers: dict[str, StreakTracker] = {}
-        self.signal_repo = SignalRepository()
 
-        self.tp_atr_mult = Decimal(str(settings.tp_atr_mult))
-        self.sl_atr_mult = Decimal(str(settings.sl_atr_mult))
-        self.max_risk_percent = Decimal(str(settings.max_risk_percent))
+        self.tp_atr_mult = config.tp_atr_mult
+        self.sl_atr_mult = config.sl_atr_mult
+        self.max_risk_percent = config.max_risk_percent
+
+        # Injected callbacks (None = no-op, e.g., in backtesting mode)
+        self._save_signal = save_signal
+        self._save_streak = save_streak
+        self._load_streaks = load_streaks
+        self._load_active_signals = load_active_signals
 
         self._callbacks: list[SignalCallback] = []
         self._initialized = False
@@ -194,30 +218,31 @@ class SignalGenerator:
         self._active_positions: dict[str, bool] = {}
 
     async def init(self) -> None:
-        """Initialize per-symbol/timeframe streak trackers from cache or database."""
+        """Initialize per-symbol/timeframe streak trackers and active positions."""
         if self._initialized:
             return
 
-        # Try to load all streaks from cache first
-        cached_trackers = await streak_cache.load_all_streaks()
-        if cached_trackers:
-            self._streak_trackers = cached_trackers
-            logger.info(
-                f"Loaded {len(cached_trackers)} streak trackers from cache: "
-                + ", ".join(
-                    f"{k}={v.current_streak}" for k, v in cached_trackers.items()
+        # Load streaks via callback
+        if self._load_streaks:
+            cached_trackers = await self._load_streaks()
+            if cached_trackers:
+                self._streak_trackers = cached_trackers
+                logger.info(
+                    f"Loaded {len(cached_trackers)} streak trackers: "
+                    + ", ".join(
+                        f"{k}={v.current_streak}" for k, v in cached_trackers.items()
+                    )
                 )
-            )
-        else:
-            logger.info("No streak trackers in cache, will build from outcomes")
+            else:
+                logger.info("No streak trackers found, will build from outcomes")
 
-        # Load active positions from database
-        # Pine Script: strategy.position_size == 0 check
-        active_signals = await self.signal_repo.get_active()
-        for signal in active_signals:
-            symbol_key = f"{signal.symbol}_{signal.timeframe}"
-            self._active_positions[symbol_key] = True
-        logger.info(f"Loaded {len(active_signals)} active positions")
+        # Load active positions via callback
+        if self._load_active_signals:
+            active_signals = await self._load_active_signals()
+            for signal in active_signals:
+                symbol_key = f"{signal.symbol}_{signal.timeframe}"
+                self._active_positions[symbol_key] = True
+            logger.info(f"Loaded {len(active_signals)} active positions")
 
         self._initialized = True
 
@@ -515,18 +540,16 @@ class SignalGenerator:
         if signal:
             symbol_key = f"{signal.symbol}_{signal.timeframe}"
 
-            # Save to database FIRST - if this fails, don't mark as active
-            # This ensures _active_positions stays in sync with actual DB state
-            try:
-                await self.signal_repo.save(signal)
-            except Exception as e:
-                logger.error(
-                    f"Failed to save signal {signal.id} to database: {e}. "
-                    "Signal will NOT be tracked."
-                )
-                # Don't mark as active, don't notify callbacks
-                # Signal will be regenerated on next matching kline if conditions persist
-                return ProcessKlineResult(signal=None, atr=atr_value)
+            # Persist signal via callback
+            if self._save_signal:
+                try:
+                    await self._save_signal(signal)
+                except Exception as e:
+                    logger.error(
+                        f"Failed to save signal {signal.id}: {e}. "
+                        "Signal will NOT be tracked."
+                    )
+                    return ProcessKlineResult(signal=None, atr=atr_value)
 
             # Mark position as active only after successful save
             # (Pine Script: strategy.position_size != 0)
@@ -555,7 +578,10 @@ class SignalGenerator:
         if symbol and timeframe:
             tracker = self._get_streak(symbol, timeframe)
             tracker.record_outcome(outcome)
-            await streak_cache.save_streak(symbol, timeframe, tracker)
+
+            # Persist streak via callback
+            if self._save_streak:
+                await self._save_streak(symbol, timeframe, tracker)
 
             logger.debug(
                 f"Updated streak for {symbol}_{timeframe}: {tracker.current_streak} "
