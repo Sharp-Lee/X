@@ -48,12 +48,10 @@ class BacktestEngine:
         symbol: str,
         timeframes: list[str],
         strategy: StrategyConfig,
-        signal_start_time: datetime,
         timeout_hours: int = 24,
     ):
         self.symbol = symbol
         self.timeframes = timeframes
-        self.signal_start_time = signal_start_time
         self._total_1m = 0
 
         # KlineAggregator for higher timeframes (exclude 1m)
@@ -118,13 +116,8 @@ class BacktestEngine:
         result = await gen.process_kline(kline, buffer)
 
         if result.signal:
-            # ALL signals must be tracked for position lock management
-            # (OutcomeTracker resolves them → record_outcome releases the lock)
+            self._signals.append(result.signal)
             self._outcome_tracker.add_signal(result.signal)
-
-            # Only count signals after start_date in final results
-            if result.signal.signal_time >= self.signal_start_time:
-                self._signals.append(result.signal)
 
         # Update max_atr for active signals
         if result.atr is not None:

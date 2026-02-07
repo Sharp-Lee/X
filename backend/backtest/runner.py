@@ -10,7 +10,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from core.models.config import StrategyConfig
 
@@ -30,7 +30,6 @@ class BacktestConfig:
     end_date: datetime
     strategy: StrategyConfig
     timeout_hours: int = 24
-    warmup_klines: int = 1500  # ~25 hours of 1m data
 
 
 class BacktestRunner:
@@ -86,18 +85,15 @@ class BacktestRunner:
 
         repo = KlineRepository()
 
-        # Calculate fetch start with warmup margin
-        fetch_start = self.config.start_date - timedelta(
-            minutes=self.config.warmup_klines
-        )
-
         logger.info(
             f"[{symbol}] Loading 1m klines: "
-            f"{fetch_start:%Y-%m-%d %H:%M} → {self.config.end_date:%Y-%m-%d %H:%M}"
+            f"{self.config.start_date:%Y-%m-%d} → {self.config.end_date:%Y-%m-%d}"
         )
 
-        # Fetch all 1m klines (including warmup period)
-        klines = await repo.get_range(symbol, "1m", fetch_start, self.config.end_date)
+        # Fetch all 1m klines in range
+        klines = await repo.get_range(
+            symbol, "1m", self.config.start_date, self.config.end_date
+        )
 
         if not klines:
             logger.warning(f"[{symbol}] No 1m klines found in range")
@@ -110,7 +106,6 @@ class BacktestRunner:
             symbol=symbol,
             timeframes=self.config.timeframes,
             strategy=self.config.strategy,
-            signal_start_time=self.config.start_date,
             timeout_hours=self.config.timeout_hours,
         )
         await engine.init()
@@ -147,9 +142,7 @@ class BacktestRunner:
                 count = await downloader.sync_historical(
                     symbol=symbol,
                     timeframe="1m",
-                    start_date=self.config.start_date - timedelta(
-                        minutes=self.config.warmup_klines
-                    ),
+                    start_date=self.config.start_date,
                     end_date=self.config.end_date,
                 )
                 results[symbol] = count
