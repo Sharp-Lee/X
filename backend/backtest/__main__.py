@@ -84,12 +84,6 @@ Examples:
         help="Output file path for JSON results",
     )
     parser.add_argument(
-        "--timeout-hours",
-        type=int,
-        default=24,
-        help="Signal timeout in hours (default: 24)",
-    )
-    parser.add_argument(
         "--verbose",
         "-v",
         action="store_true",
@@ -131,7 +125,6 @@ async def main() -> None:
         start_date=args.start,
         end_date=args.end,
         strategy=StrategyConfig(),
-        timeout_hours=args.timeout_hours,
     )
 
     runner = BacktestRunner(config)
@@ -145,9 +138,7 @@ async def main() -> None:
 
     # Run backtest
     print("\nRunning backtest...")
-    result = runner.run()
-    if asyncio.iscoroutine(result):
-        result = await result
+    result = await runner.run()
 
     # Print console report
     ReportFormatter.print_console(result)

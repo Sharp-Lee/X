@@ -9,13 +9,12 @@ Rules:
 - SHORT: low <= tp_price → TP, high >= sl_price → SL
 - Both hit same kline → SL (pessimistic assumption)
 - MAE/MFE updated using kline high/low on every 1m kline
-- Timeout after configurable hours → signal stays ACTIVE
+- Signals stay active until TP or SL is hit (no timeout)
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Awaitable, Callable
 
@@ -34,10 +33,8 @@ class OutcomeTracker:
 
     def __init__(
         self,
-        timeout_hours: int = 24,
         on_outcome: OnOutcomeCallback | None = None,
     ):
-        self.timeout_hours = timeout_hours
         self._on_outcome = on_outcome
         self._active_signals: list[SignalRecord] = []
         self._resolved_count = 0
@@ -50,25 +47,16 @@ class OutcomeTracker:
         """Check all active signals against a 1m kline.
 
         For each active signal matching kline.symbol:
-        1. Check timeout
-        2. Update MAE/MFE using kline high and low
-        3. Check if TP or SL is hit
+        1. Update MAE/MFE using kline high and low
+        2. Check if TP or SL is hit
         """
         if not self._active_signals:
             return
 
         to_remove: list[SignalRecord] = []
-        timeout_delta = timedelta(hours=self.timeout_hours)
 
         for signal in self._active_signals:
             if signal.symbol != kline.symbol:
-                continue
-
-            # Check timeout — release position lock so new signals can generate
-            if kline.timestamp - signal.signal_time >= timeout_delta:
-                to_remove.append(signal)
-                if self._on_outcome:
-                    await self._on_outcome(signal, Outcome.ACTIVE)
                 continue
 
             # Update MAE/MFE using both extremes

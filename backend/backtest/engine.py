@@ -48,7 +48,6 @@ class BacktestEngine:
         symbol: str,
         timeframes: list[str],
         strategy: StrategyConfig,
-        timeout_hours: int = 24,
     ):
         self.symbol = symbol
         self.timeframes = timeframes
@@ -68,7 +67,6 @@ class BacktestEngine:
 
         # Outcome tracker
         self._outcome_tracker = OutcomeTracker(
-            timeout_hours=timeout_hours,
             on_outcome=self._handle_outcome,
         )
 

@@ -203,7 +203,6 @@ class SignalGenerator:
 
         self.tp_atr_mult = config.tp_atr_mult
         self.sl_atr_mult = config.sl_atr_mult
-        self.max_risk_percent = config.max_risk_percent
 
         # Injected callbacks (None = no-op, e.g., in backtesting mode)
         self._save_signal = save_signal
@@ -306,35 +305,6 @@ class SignalGenerator:
 
         return tp_price, sl_price
 
-    def _check_risk_management(
-        self,
-        entry_price: Decimal,
-        sl_price: Decimal,
-        equity: Decimal = Decimal("10000"),  # Default equity for signal generation
-    ) -> bool:
-        """
-        Check if trade meets risk management criteria.
-
-        Pine Script: riskAmount <= strategy.equity * i_maxRiskPercent / 100
-
-        For signal generation (without actual equity tracking), we use a default
-        equity value to validate the risk percentage constraint.
-
-        Args:
-            entry_price: Entry price
-            sl_price: Stop loss price
-            equity: Account equity (default 10000 for relative risk check)
-
-        Returns:
-            True if risk is within limits, False otherwise
-        """
-        risk_distance = abs(entry_price - sl_price)
-        # Risk as percentage of entry price (proxy for position-based risk)
-        risk_percent = (risk_distance / entry_price) * Decimal("100")
-
-        # Check if risk is within max_risk_percent
-        return risk_percent <= self.max_risk_percent
-
     def detect_signal(
         self,
         kline: Kline,
@@ -422,13 +392,6 @@ class SignalGenerator:
                     Direction.SHORT, close, atr_value, high, low
                 )
 
-                # Pine Script: riskAmount <= strategy.equity * i_maxRiskPercent / 100
-                if not self._check_risk_management(close, sl_price):
-                    logger.debug(
-                        f"SHORT signal rejected: risk exceeds {self.max_risk_percent}%"
-                    )
-                    return None
-
                 streak = self._get_streak(kline.symbol, kline.timeframe)
                 signal = SignalRecord(
                     symbol=kline.symbol,
@@ -462,13 +425,6 @@ class SignalGenerator:
                 tp_price, sl_price = self.calculate_tp_sl(
                     Direction.LONG, close, atr_value, high, low
                 )
-
-                # Pine Script: riskAmount <= strategy.equity * i_maxRiskPercent / 100
-                if not self._check_risk_management(close, sl_price):
-                    logger.debug(
-                        f"LONG signal rejected: risk exceeds {self.max_risk_percent}%"
-                    )
-                    return None
 
                 streak = self._get_streak(kline.symbol, kline.timeframe)
                 signal = SignalRecord(

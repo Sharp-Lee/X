@@ -29,7 +29,6 @@ class BacktestConfig:
     start_date: datetime
     end_date: datetime
     strategy: StrategyConfig
-    timeout_hours: int = 24
 
 
 class BacktestRunner:
@@ -110,7 +109,6 @@ class BacktestRunner:
             symbol=symbol,
             timeframes=self.config.timeframes,
             strategy=self.config.strategy,
-            timeout_hours=self.config.timeout_hours,
         )
         await engine.init()
 

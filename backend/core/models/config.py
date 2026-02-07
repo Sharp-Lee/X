@@ -23,7 +23,7 @@ class StrategyConfig(BaseModel):
     tp_atr_mult: Decimal = Decimal("2.0")
     sl_atr_mult: Decimal = Decimal("8.84")  # 2 * 4.42
 
-    # Risk management
+    # Risk management (reserved for future position sizing, not used by SignalGenerator)
     max_risk_percent: Decimal = Decimal("2.53")  # Max risk per trade as % of equity
 
     # Tolerance for price touching levels (as percentage)
