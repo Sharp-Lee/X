@@ -33,7 +33,7 @@ _client: redis.Redis | None = None
 KEY_PREFIX_SIGNAL = "signal:"        # Active signals: signal:{id}
 KEY_PREFIX_SIGNALS = "signals:"      # Signal list by symbol: signals:{symbol}
 KEY_PREFIX_PRICE = "price:"          # Latest price: price:{symbol}
-KEY_PREFIX_STREAK = "streak"         # Streak tracker state
+KEY_PREFIX_STREAK = "streak:"        # Streak tracker: streak:{symbol}_{timeframe}
 
 
 # =============================================================================

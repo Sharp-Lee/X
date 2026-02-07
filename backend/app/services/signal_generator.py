@@ -180,7 +180,7 @@ class SignalGenerator:
             atr_period=settings.atr_period,
         )
         self.level_manager = LevelManager()
-        self.streak_tracker = StreakTracker()
+        self._streak_trackers: dict[str, StreakTracker] = {}
         self.signal_repo = SignalRepository()
 
         self.tp_atr_mult = Decimal(str(settings.tp_atr_mult))
@@ -194,30 +194,22 @@ class SignalGenerator:
         self._active_positions: dict[str, bool] = {}
 
     async def init(self) -> None:
-        """Initialize streak tracker from cache or database."""
+        """Initialize per-symbol/timeframe streak trackers from cache or database."""
         if self._initialized:
             return
 
-        # Try to load from cache first
-        cached_tracker = await streak_cache.load_streak()
-        if cached_tracker:
-            self.streak_tracker = cached_tracker
+        # Try to load all streaks from cache first
+        cached_trackers = await streak_cache.load_all_streaks()
+        if cached_trackers:
+            self._streak_trackers = cached_trackers
             logger.info(
-                f"Loaded streak from cache: {cached_tracker.current_streak} "
-                f"(wins={cached_tracker.total_wins}, losses={cached_tracker.total_losses})"
+                f"Loaded {len(cached_trackers)} streak trackers from cache: "
+                + ", ".join(
+                    f"{k}={v.current_streak}" for k, v in cached_trackers.items()
+                )
             )
         else:
-            # Fall back to database query for historical stats
-            stats = await self.signal_repo.get_stats()
-            self.streak_tracker.total_wins = stats.get("tp_count", 0)
-            self.streak_tracker.total_losses = stats.get("sl_count", 0)
-            # Sync to cache
-            await streak_cache.save_streak(self.streak_tracker)
-            logger.info(
-                f"Loaded streak from database: "
-                f"wins={self.streak_tracker.total_wins}, "
-                f"losses={self.streak_tracker.total_losses}"
-            )
+            logger.info("No streak trackers in cache, will build from outcomes")
 
         # Load active positions from database
         # Pine Script: strategy.position_size == 0 check
@@ -228,6 +220,13 @@ class SignalGenerator:
         logger.info(f"Loaded {len(active_signals)} active positions")
 
         self._initialized = True
+
+    def _get_streak(self, symbol: str, timeframe: str) -> StreakTracker:
+        """Get or create a streak tracker for a symbol/timeframe pair."""
+        key = f"{symbol}_{timeframe}"
+        if key not in self._streak_trackers:
+            self._streak_trackers[key] = StreakTracker()
+        return self._streak_trackers[key]
 
     def on_signal(self, callback: SignalCallback) -> None:
         """Register callback for new signals.
@@ -405,6 +404,7 @@ class SignalGenerator:
                     )
                     return None
 
+                streak = self._get_streak(kline.symbol, kline.timeframe)
                 signal = SignalRecord(
                     symbol=kline.symbol,
                     timeframe=kline.timeframe,
@@ -415,7 +415,7 @@ class SignalGenerator:
                     sl_price=sl_price,
                     atr_at_signal=atr_value,
                     max_atr=atr_value,  # Initialize max_atr with atr_at_signal
-                    streak_at_signal=self.streak_tracker.current_streak,
+                    streak_at_signal=streak.current_streak,
                 )
                 logger.info(
                     f"SHORT signal: {kline.symbol} @ {close} "
@@ -445,6 +445,7 @@ class SignalGenerator:
                     )
                     return None
 
+                streak = self._get_streak(kline.symbol, kline.timeframe)
                 signal = SignalRecord(
                     symbol=kline.symbol,
                     timeframe=kline.timeframe,
@@ -455,7 +456,7 @@ class SignalGenerator:
                     sl_price=sl_price,
                     atr_at_signal=atr_value,
                     max_atr=atr_value,  # Initialize max_atr with atr_at_signal
-                    streak_at_signal=self.streak_tracker.current_streak,
+                    streak_at_signal=streak.current_streak,
                 )
                 logger.info(
                     f"LONG signal: {kline.symbol} @ {close} "
@@ -543,28 +544,29 @@ class SignalGenerator:
     async def record_outcome(
         self, outcome: Outcome, symbol: str | None = None, timeframe: str | None = None
     ) -> None:
-        """Record a signal outcome and update streak tracker.
+        """Record a signal outcome and update per-symbol/timeframe streak tracker.
 
         Args:
             outcome: The outcome (TP or SL)
             symbol: Symbol of the closed position (to release position lock)
             timeframe: Timeframe of the closed position
         """
-        self.streak_tracker.record_outcome(outcome)
-        # Save to cache
-        await streak_cache.save_streak(self.streak_tracker)
-
-        # Release position lock (Pine Script: allow new position after close)
+        # Update per-symbol/timeframe streak
         if symbol and timeframe:
+            tracker = self._get_streak(symbol, timeframe)
+            tracker.record_outcome(outcome)
+            await streak_cache.save_streak(symbol, timeframe, tracker)
+
+            logger.debug(
+                f"Updated streak for {symbol}_{timeframe}: {tracker.current_streak} "
+                f"(wins={tracker.total_wins}, losses={tracker.total_losses})"
+            )
+
+            # Release position lock (Pine Script: allow new position after close)
             symbol_key = f"{symbol}_{timeframe}"
             if symbol_key in self._active_positions:
                 del self._active_positions[symbol_key]
                 logger.debug(f"Released position lock for {symbol_key}")
-
-        logger.debug(
-            f"Updated streak: {self.streak_tracker.current_streak} "
-            f"(wins={self.streak_tracker.total_wins}, losses={self.streak_tracker.total_losses})"
-        )
 
     def release_position(self, symbol: str, timeframe: str) -> None:
         """Release position lock for a symbol/timeframe combination.
