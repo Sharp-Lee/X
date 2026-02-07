@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.config import get_settings
 from app.models import Direction, Outcome
@@ -424,3 +424,91 @@ async def set_leverage(symbol: str, leverage: int = Query(10, ge=1, le=125)):
         }
     finally:
         await order_service.close()
+
+
+# ---------- Analytics ----------
+
+class WinRateItem(BaseModel):
+    """Win rate for a group."""
+    wins: int
+    losses: int
+    total: int
+    win_rate: Optional[float] = None
+
+
+class SymbolWinRate(WinRateItem):
+    symbol: str
+
+
+class TimeframeWinRate(WinRateItem):
+    timeframe: str
+
+
+class DirectionWinRate(WinRateItem):
+    direction: str
+
+
+class ExpectancyStats(BaseModel):
+    total: int
+    wins: int
+    losses: int
+    win_rate: Optional[float] = None
+    expectancy_r: Optional[float] = None
+    total_r: Optional[float] = None
+    profit_factor: Optional[float] = None
+
+
+class MaeMfeStats(BaseModel):
+    outcome: str
+    count: int
+    avg_mae: Optional[float] = None
+    avg_mfe: Optional[float] = None
+    mae_p25: Optional[float] = None
+    mae_p50: Optional[float] = None
+    mae_p75: Optional[float] = None
+    mae_p90: Optional[float] = None
+    mfe_p25: Optional[float] = None
+    mfe_p50: Optional[float] = None
+    mfe_p75: Optional[float] = None
+    mfe_p90: Optional[float] = None
+
+
+class DailyPerformance(BaseModel):
+    date: str
+    wins: int
+    losses: int
+    total: int
+    daily_r: Optional[float] = None
+    cumulative_r: Optional[float] = None
+
+
+class AnalyticsSummaryResponse(BaseModel):
+    by_symbol: list[SymbolWinRate]
+    by_timeframe: list[TimeframeWinRate]
+    by_direction: list[DirectionWinRate]
+    expectancy: ExpectancyStats
+    daily: list[DailyPerformance]
+    mae_mfe: dict[str, MaeMfeStats] = Field(default_factory=dict)
+
+
+@router.get("/analytics/summary", response_model=AnalyticsSummaryResponse)
+async def get_analytics_summary(
+    days: int = Query(30, ge=1, le=365, description="Days for daily performance"),
+):
+    """Combined analytics dashboard - all key metrics in one call."""
+    repo = get_signal_repo()
+    data = await repo.get_analytics_summary(days=days)
+
+    # Convert mae_mfe dict values to MaeMfeStats
+    mae_mfe = {}
+    for key, val in data.get("mae_mfe", {}).items():
+        mae_mfe[key] = MaeMfeStats(**val)
+
+    return AnalyticsSummaryResponse(
+        by_symbol=data["by_symbol"],
+        by_timeframe=data["by_timeframe"],
+        by_direction=data["by_direction"],
+        expectancy=data["expectancy"],
+        daily=data["daily"],
+        mae_mfe=mae_mfe,
+    )

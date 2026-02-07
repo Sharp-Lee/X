@@ -3,7 +3,9 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import func, select, update
+import asyncio
+
+from sqlalchemy import func, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -174,6 +176,192 @@ class SignalRepository:
                 "total_count": total,
                 "win_rate": win_rate,
             }
+
+    # ---------- Analytics Methods ----------
+
+    async def get_analytics_summary(self, days: int = 30) -> dict:
+        """Get combined analytics summary in one call.
+
+        Runs all analytics queries concurrently for minimal latency.
+        """
+        (
+            by_symbol,
+            by_timeframe,
+            by_direction,
+            expectancy,
+            daily,
+            mae_mfe,
+        ) = await asyncio.gather(
+            self._get_by_symbol(),
+            self._get_by_timeframe(),
+            self._get_by_direction(),
+            self._get_expectancy(),
+            self._get_daily(days=days),
+            self._get_mae_mfe(),
+        )
+        return {
+            "by_symbol": by_symbol,
+            "by_timeframe": by_timeframe,
+            "by_direction": by_direction,
+            "expectancy": expectancy,
+            "daily": daily,
+            "mae_mfe": mae_mfe,
+        }
+
+    async def _get_by_symbol(self) -> list[dict]:
+        """Win rate breakdown by symbol."""
+        async with get_database().session() as session:
+            result = await session.execute(text("""
+                SELECT
+                    symbol,
+                    COUNT(*) FILTER (WHERE outcome = 'tp') AS wins,
+                    COUNT(*) FILTER (WHERE outcome = 'sl') AS losses,
+                    COUNT(*) AS total,
+                    ROUND(
+                        COUNT(*) FILTER (WHERE outcome = 'tp')::numeric
+                        / NULLIF(COUNT(*), 0) * 100, 2
+                    ) AS win_rate
+                FROM signals
+                WHERE outcome != 'active'
+                GROUP BY symbol
+                ORDER BY win_rate DESC
+            """))
+            return [dict(row._mapping) for row in result.all()]
+
+    async def _get_by_timeframe(self) -> list[dict]:
+        """Win rate breakdown by timeframe."""
+        async with get_database().session() as session:
+            result = await session.execute(text("""
+                SELECT
+                    timeframe,
+                    COUNT(*) FILTER (WHERE outcome = 'tp') AS wins,
+                    COUNT(*) FILTER (WHERE outcome = 'sl') AS losses,
+                    COUNT(*) AS total,
+                    ROUND(
+                        COUNT(*) FILTER (WHERE outcome = 'tp')::numeric
+                        / NULLIF(COUNT(*), 0) * 100, 2
+                    ) AS win_rate
+                FROM signals
+                WHERE outcome != 'active'
+                GROUP BY timeframe
+                ORDER BY win_rate DESC
+            """))
+            return [dict(row._mapping) for row in result.all()]
+
+    async def _get_by_direction(self) -> list[dict]:
+        """Win rate breakdown by direction."""
+        async with get_database().session() as session:
+            result = await session.execute(text("""
+                SELECT
+                    CASE WHEN direction = 1 THEN 'LONG' ELSE 'SHORT' END AS direction,
+                    COUNT(*) FILTER (WHERE outcome = 'tp') AS wins,
+                    COUNT(*) FILTER (WHERE outcome = 'sl') AS losses,
+                    COUNT(*) AS total,
+                    ROUND(
+                        COUNT(*) FILTER (WHERE outcome = 'tp')::numeric
+                        / NULLIF(COUNT(*), 0) * 100, 2
+                    ) AS win_rate
+                FROM signals
+                WHERE outcome != 'active'
+                GROUP BY direction
+                ORDER BY direction
+            """))
+            return [dict(row._mapping) for row in result.all()]
+
+    async def _get_expectancy(self) -> dict:
+        """Overall expectancy in R-multiples.
+
+        TP = +4.42R, SL = -1R.
+        Expectancy = (win_rate * 4.42) - (loss_rate * 1.0)
+        """
+        async with get_database().session() as session:
+            result = await session.execute(text("""
+                SELECT
+                    COUNT(*) AS total,
+                    COUNT(*) FILTER (WHERE outcome = 'tp') AS wins,
+                    COUNT(*) FILTER (WHERE outcome = 'sl') AS losses,
+                    ROUND(
+                        COUNT(*) FILTER (WHERE outcome = 'tp')::numeric
+                        / NULLIF(COUNT(*), 0) * 100, 2
+                    ) AS win_rate,
+                    ROUND(
+                        (COUNT(*) FILTER (WHERE outcome = 'tp')::numeric
+                         / NULLIF(COUNT(*), 0) * 4.42)
+                        - (COUNT(*) FILTER (WHERE outcome = 'sl')::numeric
+                           / NULLIF(COUNT(*), 0) * 1.0),
+                        4
+                    ) AS expectancy_r,
+                    ROUND(
+                        COUNT(*) FILTER (WHERE outcome = 'tp')::numeric * 4.42
+                        - COUNT(*) FILTER (WHERE outcome = 'sl')::numeric * 1.0,
+                        2
+                    ) AS total_r,
+                    ROUND(
+                        (COUNT(*) FILTER (WHERE outcome = 'tp')::numeric * 4.42)
+                        / NULLIF(COUNT(*) FILTER (WHERE outcome = 'sl')::numeric * 1.0, 0),
+                        2
+                    ) AS profit_factor
+                FROM signals
+                WHERE outcome != 'active'
+            """))
+            row = result.one()
+            return dict(row._mapping)
+
+    async def _get_daily(self, days: int = 30) -> list[dict]:
+        """Daily performance with cumulative R curve."""
+        async with get_database().session() as session:
+            result = await session.execute(text("""
+                WITH daily AS (
+                    SELECT
+                        DATE(outcome_time AT TIME ZONE 'UTC') AS date,
+                        COUNT(*) FILTER (WHERE outcome = 'tp') AS wins,
+                        COUNT(*) FILTER (WHERE outcome = 'sl') AS losses,
+                        COUNT(*) AS total,
+                        ROUND(
+                            COUNT(*) FILTER (WHERE outcome = 'tp')::numeric * 4.42
+                            - COUNT(*) FILTER (WHERE outcome = 'sl')::numeric * 1.0,
+                            2
+                        ) AS daily_r
+                    FROM signals
+                    WHERE outcome != 'active'
+                      AND outcome_time >= NOW() - MAKE_INTERVAL(days => :days)
+                    GROUP BY DATE(outcome_time AT TIME ZONE 'UTC')
+                    ORDER BY date
+                )
+                SELECT
+                    date::text AS date,
+                    wins,
+                    losses,
+                    total,
+                    daily_r,
+                    SUM(daily_r) OVER (ORDER BY date) AS cumulative_r
+                FROM daily
+            """), {"days": days})
+            return [dict(row._mapping) for row in result.all()]
+
+    async def _get_mae_mfe(self) -> dict:
+        """MAE/MFE distribution statistics for wins and losses."""
+        async with get_database().session() as session:
+            result = await session.execute(text("""
+                SELECT
+                    outcome,
+                    COUNT(*) AS count,
+                    ROUND(AVG(mae_ratio)::numeric, 4) AS avg_mae,
+                    ROUND(AVG(mfe_ratio)::numeric, 4) AS avg_mfe,
+                    ROUND(PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY mae_ratio)::numeric, 4) AS mae_p25,
+                    ROUND(PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY mae_ratio)::numeric, 4) AS mae_p50,
+                    ROUND(PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY mae_ratio)::numeric, 4) AS mae_p75,
+                    ROUND(PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY mae_ratio)::numeric, 4) AS mae_p90,
+                    ROUND(PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY mfe_ratio)::numeric, 4) AS mfe_p25,
+                    ROUND(PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY mfe_ratio)::numeric, 4) AS mfe_p50,
+                    ROUND(PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY mfe_ratio)::numeric, 4) AS mfe_p75,
+                    ROUND(PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY mfe_ratio)::numeric, 4) AS mfe_p90
+                FROM signals
+                WHERE outcome != 'active'
+                GROUP BY outcome
+            """))
+            rows = result.all()
+            return {row._mapping["outcome"]: dict(row._mapping) for row in rows}
 
     def _row_to_signal(self, row: SignalTable) -> SignalRecord:
         """Convert database row to SignalRecord model."""
