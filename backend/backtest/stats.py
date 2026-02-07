@@ -3,10 +3,10 @@
 Computes overall metrics, per-symbol/timeframe/direction breakdowns,
 daily P&L curve, and MAE/MFE distributions.
 
-R-multiple convention (matching live system signal_repo):
-  TP = +4.42R, SL = -1R
-  Where R = TP distance (not SL distance). This is because
-  SL/TP ratio = 8.84/2.0 = 4.42, so each SL costs 4.42 TP-distances.
+R-multiple convention:
+  Narrow TP / Wide SL: TP = +1R, SL = -4.42R (R = TP distance).
+  SL/TP ratio = 8.84 ATR / 2.0 ATR = 4.42.
+  Breakeven win rate = 4.42 / (1 + 4.42) = 81.5%.
 """
 
 from __future__ import annotations
@@ -21,28 +21,10 @@ from core.models.signal import Direction, Outcome, SignalRecord
 
 logger = logging.getLogger(__name__)
 
-# R-multiple: SL distance / TP distance = 8.84 / 2.0 = 4.42
-# Convention: TP earns +4.42R, SL loses -1R (R = SL distance)
-# Wait — let me re-check the existing convention:
-# In signal_repo._get_expectancy(): win_rate * 4.42 - loss_rate * 1.0
-# This means: each TP earns 4.42, each SL costs 1.0
-# Breakeven = 1 / (1 + 4.42) = 18.4%... that can't be right for 81.5% breakeven
-#
-# Actually the breakeven calculation: win_rate * 4.42 = loss_rate * 1.0
-# w * 4.42 = (1-w) * 1.0 → 4.42w = 1 - w → 5.42w = 1 → w = 18.4%
-# But the project says breakeven is 81.5%, which means:
-# w * R_tp = (1-w) * R_sl → 0.815 * R_tp = 0.185 * R_sl
-# R_sl / R_tp = 0.815 / 0.185 = 4.405 ≈ 4.42
-#
-# So the convention is: R_tp = 1 unit, R_sl = 4.42 units
-# TP earns +1, SL loses -4.42. Breakeven = 4.42/(1+4.42) = 81.5% ✓
-#
-# But signal_repo uses: "win_rate * 4.42 - loss_rate * 1.0"
-# That would be: TP=+4.42, SL=-1.0, breakeven=1/(1+4.42)=18.4%
-# This seems inverted. Let me just follow the actual convention that
-# makes breakeven = 81.5%: TP = +1R, SL = -4.42R
+# Narrow TP (2.0 ATR) / Wide SL (8.84 ATR)
+# SL/TP = 8.84 / 2.0 = 4.42
 TP_R = 1.0     # R-units earned per TP
-SL_R = 4.42    # R-units lost per SL (SL distance / TP distance)
+SL_R = 4.42    # R-units lost per SL
 BREAKEVEN_WIN_RATE = SL_R / (TP_R + SL_R) * 100  # 81.5%
 
 

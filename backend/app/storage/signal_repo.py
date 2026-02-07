@@ -271,8 +271,10 @@ class SignalRepository:
     async def _get_expectancy(self) -> dict:
         """Overall expectancy in R-multiples.
 
-        TP = +4.42R, SL = -1R.
-        Expectancy = (win_rate * 4.42) - (loss_rate * 1.0)
+        Narrow TP / Wide SL: TP = +1R, SL = -4.42R (R = TP distance).
+        SL/TP ratio = 8.84 ATR / 2.0 ATR = 4.42.
+        Breakeven win rate = 4.42 / (1 + 4.42) = 81.5%.
+        Expectancy = (win_rate * 1.0) - (loss_rate * 4.42)
         """
         async with get_database().session() as session:
             result = await session.execute(text("""
@@ -286,19 +288,19 @@ class SignalRepository:
                     ) AS win_rate,
                     ROUND(
                         (COUNT(*) FILTER (WHERE outcome = 'tp')::numeric
-                         / NULLIF(COUNT(*), 0) * 4.42)
+                         / NULLIF(COUNT(*), 0) * 1.0)
                         - (COUNT(*) FILTER (WHERE outcome = 'sl')::numeric
-                           / NULLIF(COUNT(*), 0) * 1.0),
+                           / NULLIF(COUNT(*), 0) * 4.42),
                         4
                     ) AS expectancy_r,
                     ROUND(
-                        COUNT(*) FILTER (WHERE outcome = 'tp')::numeric * 4.42
-                        - COUNT(*) FILTER (WHERE outcome = 'sl')::numeric * 1.0,
+                        COUNT(*) FILTER (WHERE outcome = 'tp')::numeric * 1.0
+                        - COUNT(*) FILTER (WHERE outcome = 'sl')::numeric * 4.42,
                         2
                     ) AS total_r,
                     ROUND(
-                        (COUNT(*) FILTER (WHERE outcome = 'tp')::numeric * 4.42)
-                        / NULLIF(COUNT(*) FILTER (WHERE outcome = 'sl')::numeric * 1.0, 0),
+                        (COUNT(*) FILTER (WHERE outcome = 'tp')::numeric * 1.0)
+                        / NULLIF(COUNT(*) FILTER (WHERE outcome = 'sl')::numeric * 4.42, 0),
                         2
                     ) AS profit_factor
                 FROM signals
@@ -318,8 +320,8 @@ class SignalRepository:
                         COUNT(*) FILTER (WHERE outcome = 'sl') AS losses,
                         COUNT(*) AS total,
                         ROUND(
-                            COUNT(*) FILTER (WHERE outcome = 'tp')::numeric * 4.42
-                            - COUNT(*) FILTER (WHERE outcome = 'sl')::numeric * 1.0,
+                            COUNT(*) FILTER (WHERE outcome = 'tp')::numeric * 1.0
+                            - COUNT(*) FILTER (WHERE outcome = 'sl')::numeric * 4.42,
                             2
                         ) AS daily_r
                     FROM signals
