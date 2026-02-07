@@ -1,8 +1,8 @@
 """Kline-based outcome determination for backtesting.
 
 Determines signal outcomes (TP/SL) using 1m kline high/low instead of
-aggtrades. For TP=1.77 ATR / SL=8.84 ATR, single 1m kline simultaneously
-hitting both TP and SL requires range > 10.61 ATR — probability << 0.01%.
+aggtrades. For TP=2.0 ATR / SL=8.84 ATR, single 1m kline simultaneously
+hitting both TP and SL requires range > 10.84 ATR — probability << 0.01%.
 
 Rules:
 - LONG: high >= tp_price → TP, low <= sl_price → SL
@@ -64,9 +64,11 @@ class OutcomeTracker:
             if signal.symbol != kline.symbol:
                 continue
 
-            # Check timeout
+            # Check timeout — release position lock so new signals can generate
             if kline.timestamp - signal.signal_time >= timeout_delta:
                 to_remove.append(signal)
+                if self._on_outcome:
+                    await self._on_outcome(signal, Outcome.ACTIVE)
                 continue
 
             # Update MAE/MFE using both extremes
