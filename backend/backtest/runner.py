@@ -64,6 +64,10 @@ class BacktestRunner:
                 f"{result.total_1m_klines:,} 1m klines"
             )
 
+        # Save signals to database
+        if all_signals:
+            await self._save_signals(all_signals)
+
         # Calculate statistics
         calculator = StatisticsCalculator()
         backtest_result = calculator.calculate(
@@ -125,6 +129,15 @@ class BacktestRunner:
             f"({result.total_1m_klines:,} klines)"
         )
         return result
+
+    async def _save_signals(self, signals: list) -> None:
+        """Save all backtest signals to the database."""
+        from app.storage.signal_repo import SignalRepository
+
+        repo = SignalRepository()
+        for signal in signals:
+            await repo.save(signal)
+        logger.info(f"Saved {len(signals)} signals to database")
 
     async def download_data(self) -> dict[str, int]:
         """Download 1m klines for all symbols using KlineDownloader.
