@@ -117,9 +117,14 @@ class BacktestEngine:
         gen = self._generators[timeframe]
         result = await gen.process_kline(kline, buffer)
 
-        if result.signal and result.signal.signal_time >= self.signal_start_time:
-            self._signals.append(result.signal)
+        if result.signal:
+            # ALL signals must be tracked for position lock management
+            # (OutcomeTracker resolves them → record_outcome releases the lock)
             self._outcome_tracker.add_signal(result.signal)
+
+            # Only count signals after start_date in final results
+            if result.signal.signal_time >= self.signal_start_time:
+                self._signals.append(result.signal)
 
         # Update max_atr for active signals
         if result.atr is not None:
