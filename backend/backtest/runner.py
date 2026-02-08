@@ -1,12 +1,11 @@
 """BacktestRunner - orchestrates the full backtest pipeline.
 
-Runs per-symbol engines in parallel, aggregates results, and
+Runs per-symbol engines sequentially, aggregates results, and
 computes comprehensive statistics.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from dataclasses import dataclass
@@ -32,7 +31,7 @@ class BacktestConfig:
 
 
 class BacktestRunner:
-    """Run backtests across multiple symbols in parallel."""
+    """Run backtests across multiple symbols sequentially."""
 
     def __init__(self, config: BacktestConfig):
         self.config = config
@@ -47,21 +46,20 @@ class BacktestRunner:
             f"timeframes={self.config.timeframes}"
         )
 
-        # Run per-symbol engines in parallel
-        tasks = [self._run_symbol(symbol) for symbol in self.config.symbols]
-        symbol_results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        # Collect signals from all symbols
+        # Run per-symbol engines sequentially (CPU-bound processing
+        # doesn't benefit from asyncio.gather, and concurrent DB loads
+        # can exhaust connections on large date ranges)
         all_signals = []
-        for result in symbol_results:
-            if isinstance(result, Exception):
-                logger.error(f"Symbol backtest failed: {result}")
-                continue
-            all_signals.extend(result.signals)
-            logger.info(
-                f"  {result.symbol}: {len(result.signals)} signals, "
-                f"{result.total_1m_klines:,} 1m klines"
-            )
+        for symbol in self.config.symbols:
+            try:
+                result = await self._run_symbol(symbol)
+                all_signals.extend(result.signals)
+                logger.info(
+                    f"  {result.symbol}: {len(result.signals)} signals, "
+                    f"{result.total_1m_klines:,} 1m klines"
+                )
+            except Exception:
+                logger.error(f"Symbol backtest failed: {symbol}", exc_info=True)
 
         # Save signals to database
         if all_signals:
