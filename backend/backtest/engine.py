@@ -48,9 +48,11 @@ class BacktestEngine:
         symbol: str,
         timeframes: list[str],
         strategy: StrategyConfig,
+        signal_start_time: datetime | None = None,
     ):
         self.symbol = symbol
         self.timeframes = timeframes
+        self._signal_start_time = signal_start_time
         self._total_1m = 0
 
         # KlineAggregator for higher timeframes (exclude 1m)
@@ -114,8 +116,14 @@ class BacktestEngine:
         result = await gen.process_kline(kline, buffer)
 
         if result.signal:
-            self._signals.append(result.signal)
+            # Always track in OutcomeTracker (maintains position lock)
             self._outcome_tracker.add_signal(result.signal)
+            # Only collect for output if after warmup period
+            if (
+                self._signal_start_time is None
+                or result.signal.signal_time >= self._signal_start_time
+            ):
+                self._signals.append(result.signal)
 
         # Update max_atr for active signals
         if result.atr is not None:

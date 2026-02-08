@@ -1,20 +1,28 @@
-"""BacktestRunner - orchestrates the full backtest pipeline.
+"""BacktestRunner — orchestrates the full backtest pipeline.
 
-Runs per-symbol engines sequentially, aggregates results, and
-computes comprehensive statistics.
+Completely independent of app/. Uses:
+- backtest/storage for PostgreSQL access (shared asyncpg pool)
+- backtest/downloader for downloading historical data
+- core/ for pure business logic
+
+Each run gets a unique run_id for tracking and comparison.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from core.models.config import StrategyConfig
 
+from backtest.downloader import KlineDownloader
 from backtest.engine import BacktestEngine, SymbolResult
 from backtest.stats import BacktestResult, StatisticsCalculator
+from backtest.storage.kline_source import KlineSource
+from backtest.storage.signal_repo import BacktestSignalRepo
 
 logger = logging.getLogger(__name__)
 
@@ -30,93 +38,153 @@ class BacktestConfig:
     strategy: StrategyConfig
 
 
+def generate_run_id(config: BacktestConfig) -> str:
+    """Generate a unique run ID from config + timestamp."""
+    key = (
+        f"{config.start_date.isoformat()}"
+        f":{config.end_date.isoformat()}"
+        f":{','.join(sorted(config.symbols))}"
+        f":{','.join(config.timeframes)}"
+        f":{config.strategy.model_dump_json()}"
+        f":{datetime.now(timezone.utc).isoformat()}"
+    )
+    return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
+# 2 days of 1m warmup data = 2880 klines
+# Ensures all timeframes (up to 30m × 50 periods = 1500 min) have
+# enough history for indicator calculation from the very first signal.
+WARMUP_DAYS = 2
+
+
 class BacktestRunner:
     """Run backtests across multiple symbols sequentially."""
 
-    def __init__(self, config: BacktestConfig):
+    def __init__(
+        self,
+        config: BacktestConfig,
+        kline_source: KlineSource,
+        signal_repo: BacktestSignalRepo,
+    ):
         self.config = config
+        self._kline_source = kline_source
+        self._signal_repo = signal_repo
 
     async def run(self) -> BacktestResult:
         """Execute the full backtest pipeline."""
         start_time = time.time()
+        run_id = generate_run_id(self.config)
 
         logger.info(
-            f"Starting backtest: {self.config.symbols} "
+            f"Starting backtest run={run_id}: {self.config.symbols} "
             f"{self.config.start_date:%Y-%m-%d} → {self.config.end_date:%Y-%m-%d} "
             f"timeframes={self.config.timeframes}"
         )
 
-        # Run per-symbol engines sequentially (CPU-bound processing
-        # doesn't benefit from asyncio.gather, and concurrent DB loads
-        # can exhaust connections on large date ranges)
-        all_signals = []
-        for symbol in self.config.symbols:
-            try:
-                result = await self._run_symbol(symbol)
-                all_signals.extend(result.signals)
-                logger.info(
-                    f"  {result.symbol}: {len(result.signals)} signals, "
-                    f"{result.total_1m_klines:,} 1m klines"
-                )
-            except Exception:
-                logger.error(f"Symbol backtest failed: {symbol}", exc_info=True)
-
-        # Save signals to database
-        if all_signals:
-            await self._save_signals(all_signals)
-
-        # Calculate statistics
-        calculator = StatisticsCalculator()
-        backtest_result = calculator.calculate(
-            signals=all_signals,
+        # Create run record
+        await self._signal_repo.create_run(
+            run_id=run_id,
             start_date=self.config.start_date,
             end_date=self.config.end_date,
             symbols=self.config.symbols,
             timeframes=self.config.timeframes,
+            strategy=self.config.strategy,
         )
 
-        elapsed = time.time() - start_time
-        logger.info(f"Backtest completed in {elapsed:.1f}s: {len(all_signals)} signals")
+        try:
+            # Run per-symbol engines sequentially
+            all_signals = []
+            for symbol in self.config.symbols:
+                try:
+                    result = await self._run_symbol(symbol)
+                    all_signals.extend(result.signals)
+                    logger.info(
+                        f"  {result.symbol}: {len(result.signals)} signals, "
+                        f"{result.total_1m_klines:,} 1m klines"
+                    )
+                except Exception:
+                    logger.error(
+                        f"Symbol backtest failed: {symbol}", exc_info=True
+                    )
 
-        return backtest_result
+            # Save signals to PostgreSQL
+            if all_signals:
+                count = await self._signal_repo.save_signals(
+                    run_id, all_signals
+                )
+                logger.info(f"Saved {count} signals (run={run_id})")
+
+            # Calculate statistics
+            calculator = StatisticsCalculator()
+            backtest_result = calculator.calculate(
+                signals=all_signals,
+                start_date=self.config.start_date,
+                end_date=self.config.end_date,
+                symbols=self.config.symbols,
+                timeframes=self.config.timeframes,
+            )
+
+            # Update run with final stats
+            await self._signal_repo.complete_run(run_id, backtest_result)
+
+            elapsed = time.time() - start_time
+            logger.info(
+                f"Backtest run={run_id} completed in {elapsed:.1f}s: "
+                f"{len(all_signals)} signals"
+            )
+
+            return backtest_result
+
+        except Exception:
+            await self._signal_repo.fail_run(run_id)
+            raise
 
     async def _run_symbol(self, symbol: str) -> SymbolResult:
-        """Run backtest for a single symbol."""
-        from app.storage.kline_repo import KlineRepository
+        """Run backtest for a single symbol.
 
-        repo = KlineRepository()
+        Loads extra warmup klines before start_date so indicators
+        (EMA50 etc.) are fully primed from the very first signal.
+        """
+        warmup_start = self.config.start_date - timedelta(days=WARMUP_DAYS)
 
         logger.info(
             f"[{symbol}] Loading 1m klines: "
-            f"{self.config.start_date:%Y-%m-%d} → {self.config.end_date:%Y-%m-%d}"
+            f"{warmup_start:%Y-%m-%d} → {self.config.end_date:%Y-%m-%d} "
+            f"(includes {WARMUP_DAYS}d warmup)"
         )
 
-        # Fetch all 1m klines in range
-        klines = await repo.get_range(
-            symbol, "1m", self.config.start_date, self.config.end_date
+        klines = await self._kline_source.get_range(
+            symbol, "1m", warmup_start, self.config.end_date
         )
 
         if not klines:
             logger.warning(f"[{symbol}] No 1m klines found in range")
             return SymbolResult(symbol=symbol)
 
-        logger.info(f"[{symbol}] Loaded {len(klines):,} 1m klines")
+        # Count warmup vs signal klines
+        warmup_count = sum(
+            1 for k in klines if k.timestamp < self.config.start_date
+        )
+        logger.info(
+            f"[{symbol}] Loaded {len(klines):,} 1m klines "
+            f"({warmup_count:,} warmup + {len(klines) - warmup_count:,} signal)"
+        )
 
-        # Create and init engine
         engine = BacktestEngine(
             symbol=symbol,
             timeframes=self.config.timeframes,
             strategy=self.config.strategy,
+            signal_start_time=self.config.start_date,
         )
         await engine.init()
 
-        # Process all klines
         for i, kline in enumerate(klines):
             await engine.process_1m_kline(kline)
-            if (i + 1) % 100000 == 0:
-                logger.info(f"[{symbol}] Processed {i + 1:,}/{len(klines):,} klines")
+            if (i + 1) % 100_000 == 0:
+                logger.info(
+                    f"[{symbol}] Processed {i + 1:,}/{len(klines):,} klines"
+                )
 
-        # Finalize
         engine.finalize()
 
         result = engine.get_result()
@@ -126,37 +194,30 @@ class BacktestRunner:
         )
         return result
 
-    async def _save_signals(self, signals: list) -> None:
-        """Save all backtest signals to the database."""
-        from app.storage.signal_repo import SignalRepository
+    @staticmethod
+    async def download_data(
+        database_url: str,
+        symbols: list[str],
+        start_date: datetime,
+        end_date: datetime,
+    ) -> dict[str, int]:
+        """Download 1m klines for all symbols.
 
-        repo = SignalRepository()
-        for signal in signals:
-            await repo.save(signal)
-        logger.info(f"Saved {len(signals)} signals to database")
-
-    async def download_data(self) -> dict[str, int]:
-        """Download 1m klines for all symbols using KlineDownloader.
-
-        Returns:
-            Dict of {symbol: kline_count}
+        Returns dict of {symbol: kline_count}.
         """
-        from app.services.kline_downloader import KlineDownloader
-
-        results = {}
-        for symbol in self.config.symbols:
-            logger.info(f"Downloading 1m klines for {symbol}...")
-            downloader = KlineDownloader()
-            try:
+        downloader = KlineDownloader(database_url=database_url)
+        try:
+            results = {}
+            for symbol in symbols:
+                logger.info(f"Downloading 1m klines for {symbol}...")
                 count = await downloader.sync_historical(
                     symbol=symbol,
                     timeframe="1m",
-                    start_date=self.config.start_date,
-                    end_date=self.config.end_date,
+                    start_date=start_date,
+                    end_date=end_date,
                 )
                 results[symbol] = count
                 logger.info(f"  {symbol}: {count:,} klines downloaded")
-            finally:
-                await downloader.close()
-
-        return results
+            return results
+        finally:
+            await downloader.close()
