@@ -17,9 +17,18 @@ import '@/styles/globals.css'
 
 function Dashboard() {
   const [selectedSymbol, setSelectedSymbol] = useState<string | undefined>()
+  const [selectedTimeframe, setSelectedTimeframe] = useState<string | undefined>()
   const [selectedSignal, setSelectedSignal] = useState<Signal | null>(null)
   const [view, setView] = useState('dashboard')
   const { signals, activeSignals, isLoading, error, isConnected } = useSignals(selectedSymbol)
+
+  // Client-side timeframe filtering
+  const filteredSignals = selectedTimeframe
+    ? signals.filter((s) => s.timeframe === selectedTimeframe)
+    : signals
+  const filteredActive = selectedTimeframe
+    ? activeSignals.filter((s) => s.timeframe === selectedTimeframe)
+    : activeSignals
 
   const handleSignalClick = (signal: Signal) => {
     setSelectedSignal(signal)
@@ -30,6 +39,8 @@ function Dashboard() {
       <Header
         selectedSymbol={selectedSymbol}
         onSymbolChange={setSelectedSymbol}
+        selectedTimeframe={selectedTimeframe}
+        onTimeframeChange={setSelectedTimeframe}
         isConnected={isConnected}
       />
 
@@ -60,7 +71,7 @@ function Dashboard() {
               <div className="space-y-6 order-2 lg:order-1">
                 <TradingPanel />
                 <ActivePositions
-                  signals={activeSignals}
+                  signals={filteredActive}
                   onSelect={handleSignalClick}
                 />
                 <StatsGrid symbol={selectedSymbol} />
@@ -80,20 +91,21 @@ function Dashboard() {
                 {/* Timeframe Overview */}
                 <TimeframeGrid
                   signals={signals}
+                  selectedTimeframe={selectedTimeframe}
                   onTimeframeSelect={(tf) => {
-                    console.log('Selected timeframe:', tf)
+                    setSelectedTimeframe(selectedTimeframe === tf ? undefined : tf)
                   }}
                 />
 
                 {/* Signal Tables with Tabs */}
                 <TimeframeTabs
-                  signals={activeSignals}
+                  signals={filteredActive}
                   onSignalClick={handleSignalClick}
                 />
 
                 {/* Recent Closed Signals */}
                 <SignalTable
-                  signals={signals.filter((s) => s.outcome !== 'active').slice(0, 20)}
+                  signals={filteredSignals.filter((s) => s.outcome !== 'active').slice(0, 20)}
                   title="Recent Closed Signals"
                   onSignalClick={handleSignalClick}
                 />
