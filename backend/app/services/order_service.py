@@ -70,6 +70,7 @@ class OrderService:
             "enableRateLimit": True,
             "options": {
                 "defaultType": "future",
+                "fetchCurrencies": False,  # skip api.binance.com, only use fapi
             },
         })
 
