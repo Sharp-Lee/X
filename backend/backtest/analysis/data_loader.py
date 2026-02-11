@@ -1,14 +1,17 @@
 """Load backtest signals from PostgreSQL into pandas DataFrame.
 
 Central data loading module used by all analysis phases.
-Converts Decimal columns to float64 and adds derived columns.
+Converts Decimal columns to float64 and computes actual P&L
+using real entry/outcome prices.
+
+All analysis is per (symbol, timeframe) group, so P&L uses raw
+price differences — no normalization by entry_price needed.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Optional
 
 import asyncpg
 import numpy as np
@@ -16,12 +19,9 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# Strategy constants
-TP_ATR_MULT = 2.0    # TP = 2.0 * ATR
-SL_ATR_MULT = 8.84   # SL = 8.84 * ATR
-TP_R = 1.0            # +1.0R per TP
-SL_R = 4.42           # -4.42R per SL
-BREAKEVEN_WR = SL_R / (TP_R + SL_R)  # 0.81549...
+# Strategy parameter constants (from Pine Script)
+TP_ATR_MAX = 2.0    # Maximum TP distance = 2.0 * ATR (may be capped by kline high/low)
+SL_ATR_MULT = 8.84  # SL distance = 8.84 * ATR (always exact, no cap)
 
 
 async def _fetch_signals(
@@ -53,7 +53,11 @@ async def _fetch_signals(
 
 
 def _add_derived_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Add computed columns used across all analysis phases."""
+    """Add computed columns based on actual prices.
+
+    P&L uses raw price differences (not percentages).
+    Analysis should always group by (symbol, timeframe).
+    """
     # Convert Decimal columns to float64
     decimal_cols = [
         "entry_price", "tp_price", "sl_price",
@@ -64,28 +68,41 @@ def _add_derived_columns(df: pd.DataFrame) -> pd.DataFrame:
         if col in df.columns:
             df[col] = df[col].astype(float)
 
-    # Binary win indicator
+    # --- Primary P&L: raw price difference ---
+    # pnl = direction * (outcome_price - entry_price)
+    # Positive = profit, Negative = loss
+    df["pnl"] = df["direction"] * (df["outcome_price"] - df["entry_price"])
+
+    # --- TP/SL distances in price units (always positive) ---
+    df["tp_dist"] = df["direction"] * (df["tp_price"] - df["entry_price"])
+    df["sl_dist"] = -df["direction"] * (df["sl_price"] - df["entry_price"])
+
+    # --- TP distance in ATR units (≤ 2.0 due to kline high/low cap) ---
+    df["tp_atr"] = df["tp_dist"] / df["atr_at_signal"]
+
+    # --- MAE/MFE in price units (always positive) ---
+    # mae_ratio/mfe_ratio are relative to sl_dist (risk_amount)
+    df["mae"] = df["mae_ratio"] * df["sl_dist"]
+    df["mfe"] = df["mfe_ratio"] * df["sl_dist"]
+
+    # --- MAE/MFE in ATR units ---
+    df["mae_atr"] = df["mae_ratio"] * SL_ATR_MULT
+    df["mfe_atr"] = df["mfe_ratio"] * SL_ATR_MULT
+
+    # --- Binary win indicator ---
     df["win"] = (df["outcome"] == "tp").astype(int)
 
-    # R-multiple per trade
-    df["trade_r"] = np.where(df["outcome"] == "tp", TP_R, -SL_R)
-
-    # Trade duration in minutes
+    # --- Trade duration in minutes ---
     if "outcome_time" in df.columns and "signal_time" in df.columns:
         df["duration_min"] = (
             df["outcome_time"] - df["signal_time"]
         ).dt.total_seconds() / 60.0
 
-    # MAE/MFE in ATR units (from risk units)
-    df["mae_atr"] = df["mae_ratio"] * SL_ATR_MULT
-    df["mfe_atr"] = df["mfe_ratio"] * SL_ATR_MULT
-
-    # Time components for temporal analysis
+    # --- Time components for temporal analysis ---
     df["hour_utc"] = df["signal_time"].dt.hour
     df["day_of_week"] = df["signal_time"].dt.dayofweek  # 0=Mon
     df["month"] = df["signal_time"].dt.month
     df["year"] = df["signal_time"].dt.year
-    df["quarter"] = df["signal_time"].dt.to_period("Q").astype(str)
 
     return df
 
@@ -97,12 +114,19 @@ def load_signals(
     """Load and prepare signals DataFrame.
 
     Returns DataFrame with columns:
-        id, symbol, timeframe, direction, signal_time,
-        entry_price, tp_price, sl_price,
-        atr_at_signal, max_atr, streak_at_signal,
-        mae_ratio, mfe_ratio, outcome, outcome_time, outcome_price,
-        win, trade_r, duration_min, mae_atr, mfe_atr,
-        hour_utc, day_of_week, month, year, quarter
+        Raw:    id, symbol, timeframe, direction, signal_time,
+                entry_price, tp_price, sl_price,
+                atr_at_signal, max_atr, streak_at_signal,
+                mae_ratio, mfe_ratio, outcome, outcome_time, outcome_price
+        P&L:    pnl (raw price diff, direction-aware)
+        Dist:   tp_dist, sl_dist (price units, always positive)
+                tp_atr (TP in ATR units, ≤ 2.0 due to cap)
+        MAE:    mae, mfe (price units, always positive)
+                mae_atr, mfe_atr (in ATR units)
+        Meta:   win, duration_min, hour_utc, day_of_week, month, year
+
+    Note: pnl/tp_dist/sl_dist/mae/mfe are in the symbol's price units.
+          Always group by (symbol, timeframe) before aggregating.
     """
     df = asyncio.run(_fetch_signals(database_url, run_id))
     df = _add_derived_columns(df)

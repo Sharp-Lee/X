@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Callable, Awaitable
 
+from core.atr_tracker import AtrPercentileTracker
 from core.indicators import IndicatorCalculator
 from core.models import (
     Direction,
@@ -20,7 +21,7 @@ from core.models import (
     SignalRecord,
     StreakTracker,
 )
-from core.models.config import StrategyConfig
+from core.models.config import SignalFilterConfig, StrategyConfig
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +192,8 @@ class SignalGenerator:
         save_streak: SaveStreakCallback | None = None,
         load_streaks: LoadStreaksCallback | None = None,
         load_active_signals: LoadActiveSignalsCallback | None = None,
+        filters: dict[str, SignalFilterConfig] | None = None,
+        atr_tracker: AtrPercentileTracker | None = None,
     ):
         self.config = config
         self.indicator_calc = IndicatorCalculator(
@@ -215,6 +218,22 @@ class SignalGenerator:
 
         # Track active positions per symbol (Pine Script: strategy.position_size == 0)
         self._active_positions: dict[str, bool] = {}
+
+        # Signal quality filters (keyed by "SYMBOL_TIMEFRAME")
+        # When None, all signals pass (backward compatible with backtest).
+        self._filters = filters
+        self._atr_tracker = atr_tracker
+
+        if filters:
+            logger.info(
+                "Signal filters enabled: %s",
+                ", ".join(
+                    f"{f.symbol} {f.timeframe} streak[{f.streak_lo},{f.streak_hi}] "
+                    f"ATR>{f.atr_pct_threshold:.0%}"
+                    for f in filters.values()
+                    if f.enabled
+                ),
+            )
 
     async def init(self) -> None:
         """Initialize per-symbol/timeframe streak trackers and active positions."""
@@ -446,6 +465,75 @@ class SignalGenerator:
 
         return signal
 
+    def _passes_filter(self, signal: SignalRecord, atr_value: float) -> bool:
+        """Check whether *signal* passes the quality filters.
+
+        Returns ``True`` (pass) when:
+        - No filters are configured (backward compatible).
+        - The signal's symbol/timeframe has an enabled filter entry AND
+          both the streak and ATR-percentile checks pass.
+
+        Returns ``False`` (reject) when:
+        - Filters are configured but this symbol/timeframe is absent.
+        - The filter entry is disabled.
+        - streak_at_signal is outside [streak_lo, streak_hi].
+        - ATR percentile is at or below the threshold (or data is insufficient).
+        """
+        if self._filters is None:
+            return True  # no filters configured → all signals pass
+
+        key = f"{signal.symbol}_{signal.timeframe}"
+        fc = self._filters.get(key)
+        if fc is None or not fc.enabled:
+            return False  # not in the portfolio
+
+        # --- streak filter ---
+        if not (fc.streak_lo <= signal.streak_at_signal <= fc.streak_hi):
+            logger.debug(
+                "Filter REJECT %s %s: streak=%d not in [%d,%d]",
+                signal.symbol,
+                signal.timeframe,
+                signal.streak_at_signal,
+                fc.streak_lo,
+                fc.streak_hi,
+            )
+            return False
+
+        # --- ATR percentile filter ---
+        if fc.atr_pct_threshold > 0:
+            if self._atr_tracker is None:
+                # Configuration error: threshold set but no tracker injected.
+                # Reject for safety to avoid unfiltered trading.
+                logger.warning(
+                    "Filter REJECT %s %s: atr_pct_threshold=%.2f but no ATR tracker",
+                    signal.symbol,
+                    signal.timeframe,
+                    fc.atr_pct_threshold,
+                )
+                return False
+            pct = self._atr_tracker.get_percentile(
+                signal.symbol, signal.timeframe, atr_value
+            )
+            if pct is None:
+                # Not enough data → reject for safety
+                logger.debug(
+                    "Filter REJECT %s %s: ATR history insufficient",
+                    signal.symbol,
+                    signal.timeframe,
+                )
+                return False
+            if pct <= fc.atr_pct_threshold:
+                logger.debug(
+                    "Filter REJECT %s %s: atr_pct=%.2f <= %.2f",
+                    signal.symbol,
+                    signal.timeframe,
+                    pct,
+                    fc.atr_pct_threshold,
+                )
+                return False
+
+        return True
+
     async def process_kline(
         self,
         kline: Kline,
@@ -484,8 +572,20 @@ class SignalGenerator:
         if indicators is None:
             return ProcessKlineResult(signal=None, atr=None)
 
-        # Extract ATR for updating max_atr of active signals
-        atr_value = float(indicators["atr"]) if indicators["atr"] else None
+        # Extract ATR for updating max_atr of active signals.
+        # Note: Decimal("0") is falsy and Decimal("NaN") is truthy in Python,
+        # so we must use explicit None + NaN checks instead of truthiness.
+        raw_atr = indicators["atr"]
+        if raw_atr is not None and not _is_nan(raw_atr):
+            atr_value = float(raw_atr)
+        else:
+            atr_value = None
+
+        # Track ATR history for percentile calculation (every closed kline,
+        # not just signal klines — the expanding window must reflect the full
+        # market, not a biased subset).
+        if atr_value is not None and self._atr_tracker is not None:
+            self._atr_tracker.update(kline.symbol, kline.timeframe, atr_value)
 
         # Get previous kline for level touch detection
         prev_kline = klines[-2] if len(klines) >= 2 else None
@@ -494,6 +594,12 @@ class SignalGenerator:
         signal = self.detect_signal(kline, prev_kline, indicators)
 
         if signal:
+            # Apply signal quality filters (streak + ATR percentile).
+            # atr_value is guaranteed non-None here because detect_signal()
+            # returns None when any indicator (including ATR) is NaN.
+            if not self._passes_filter(signal, atr_value):
+                return ProcessKlineResult(signal=None, atr=atr_value)
+
             symbol_key = f"{signal.symbol}_{signal.timeframe}"
 
             # Persist signal via callback

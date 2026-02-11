@@ -8,7 +8,13 @@ from core.models.signal import (
     SignalRecord,
     StreakTracker,
 )
-from core.models.config import StrategyConfig, SymbolConfig
+from core.models.config import (
+    StrategyConfig,
+    SymbolConfig,
+    SignalFilterConfig,
+    PORTFOLIO_A,
+    PORTFOLIO_B,
+)
 from core.models.processing_state import ProcessingState
 from core.models.fast import (
     FastKline,
@@ -43,6 +49,9 @@ __all__ = [
     "StreakTracker",
     "StrategyConfig",
     "SymbolConfig",
+    "SignalFilterConfig",
+    "PORTFOLIO_A",
+    "PORTFOLIO_B",
     "ProcessingState",
     # Hot path (dataclass)
     "FastKline",

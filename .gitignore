@@ -78,5 +78,8 @@ tmp/
 temp/
 *.tmp
 
+# Trading config (contains account references)
+trading.yaml
+
 # Claude
 .claude/

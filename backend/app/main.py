@@ -40,9 +40,12 @@ from app.config import get_settings
 from app.core import is_talib_available
 from app.models import Outcome, SignalRecord, StrategyConfig
 from app.services import DataCollector, SignalGenerator, PositionTracker
+from app.services.account_manager import AccountManager
 from app.storage import init_database, get_database, cache, price_cache
-from app.storage import ProcessingStateRepository, SignalRepository
+from app.storage import ProcessingStateRepository, SignalRepository, KlineRepository
 from app.storage import streak_cache
+from app.trading_config import load_trading_config
+from core.atr_tracker import AtrPercentileTracker
 
 # Startup timeout in seconds
 STARTUP_TIMEOUT = 120
@@ -53,6 +56,7 @@ logger = logging.getLogger(__name__)
 data_collector: DataCollector | None = None
 signal_generator: SignalGenerator | None = None
 position_tracker: PositionTracker | None = None
+account_manager: AccountManager | None = None
 _price_flush_task: asyncio.Task | None = None
 
 
@@ -88,6 +92,10 @@ async def on_new_signal(signal: SignalRecord) -> None:
         "sl_price": float(signal.sl_price),
         "streak_at_signal": signal.streak_at_signal,
     })
+
+    # Route to trading accounts for auto-execution
+    if account_manager:
+        await account_manager.execute_signal(signal)
 
 
 async def on_outcome(signal: SignalRecord, outcome: Outcome) -> None:
@@ -140,6 +148,59 @@ async def on_aggtrade_update(trade) -> None:
         await position_tracker.process_trade(trade)
 
 
+async def warmup_atr_tracker(
+    atr_tracker: AtrPercentileTracker,
+    portfolio_keys: set[tuple[str, str]],
+    atr_period: int = 9,
+) -> None:
+    """Pre-load ATR history from database klines for percentile calculation.
+
+    Only loads data for (symbol, timeframe) pairs that are in the active
+    portfolio.  Computes the full ATR series in one pass per pair using
+    the ``atr()`` function directly (O(n)), instead of calling
+    ``calculate_latest()`` in a sliding window (O(n^2)).
+
+    This is best-effort: failures are logged and skipped so that a DB
+    hiccup does not prevent the system from starting.
+    """
+    from core.indicators import atr as compute_atr
+
+    kline_repo = KlineRepository()
+    total = 0
+
+    for symbol, timeframe in sorted(portfolio_keys):
+        try:
+            klines = await kline_repo.get_latest(symbol, timeframe, limit=1500)
+            if len(klines) < atr_period + 1:
+                logger.warning(
+                    "ATR warmup: %s %s only %d klines (need %d), skipping",
+                    symbol, timeframe, len(klines), atr_period + 1,
+                )
+                continue
+
+            highs = [k.high for k in klines]
+            lows = [k.low for k in klines]
+            closes = [k.close for k in klines]
+
+            # Compute the full ATR series in one pass (O(n))
+            atr_series = compute_atr(highs, lows, closes, period=atr_period)
+
+            # Extract valid (non-NaN) values
+            atr_values = [
+                float(v) for v in atr_series
+                if not v.is_nan() and v > 0
+            ]
+
+            if atr_values:
+                atr_tracker.bulk_load(symbol, timeframe, atr_values)
+                total += len(atr_values)
+
+        except Exception as e:
+            logger.warning("ATR warmup failed for %s %s: %s", symbol, timeframe, e)
+
+    logger.info("ATR warmup complete: %d values across %d pairs", total, len(portfolio_keys))
+
+
 async def recover_pending_states() -> None:
     """Recover from crashed replay states.
 
@@ -169,7 +230,7 @@ async def recover_pending_states() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
-    global data_collector, signal_generator, position_tracker, _price_flush_task
+    global data_collector, signal_generator, position_tracker, account_manager, _price_flush_task
 
     logger.info("Starting MSR Retest Capture system...")
     logger.info(f"Event loop: {'uvloop' if _UVLOOP_ENABLED else 'asyncio'}")
@@ -216,6 +277,18 @@ async def lifespan(app: FastAPI):
         )
         signal_repo = SignalRepository()
 
+        # Load trading configuration (portfolio + accounts)
+        trading_config = load_trading_config()
+        portfolio = trading_config.get_signal_filters()
+
+        # Build signal quality filters from portfolio config
+        signal_filters = {f.key: f for f in portfolio}
+        atr_tracker = AtrPercentileTracker(min_samples=200)
+
+        # Warmup ATR tracker with historical kline data (portfolio pairs only)
+        portfolio_keys = {(f.symbol, f.timeframe) for f in portfolio}
+        await warmup_atr_tracker(atr_tracker, portfolio_keys, settings.atr_period)
+
         data_collector = DataCollector()
         signal_generator = SignalGenerator(
             config=config,
@@ -223,6 +296,8 @@ async def lifespan(app: FastAPI):
             save_streak=streak_cache.save_streak,
             load_streaks=streak_cache.load_all_streaks,
             load_active_signals=signal_repo.get_active,
+            filters=signal_filters,
+            atr_tracker=atr_tracker,
         )
         position_tracker = PositionTracker()
 
@@ -249,6 +324,16 @@ async def lifespan(app: FastAPI):
         except asyncio.TimeoutError:
             raise RuntimeError(f"Data collection startup timed out after {STARTUP_TIMEOUT}s")
 
+        # Initialize account manager for auto-trading (if accounts configured)
+        if trading_config.get_enabled_accounts():
+            account_manager = AccountManager(trading_config)
+            account_manager.set_filters(signal_filters)
+            await account_manager.start()
+            logger.info(
+                "Account manager started: %d account(s) active",
+                account_manager.active_count,
+            )
+
         # Start background price cache flush task
         _price_flush_task = asyncio.create_task(_periodic_price_flush())
         logger.info("Price cache flush task started")
@@ -256,6 +341,11 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Startup failed: {e}")
         # Cleanup on startup failure
+        if account_manager:
+            try:
+                await account_manager.stop()
+            except Exception as cleanup_err:
+                logger.warning(f"Error stopping account manager: {cleanup_err}")
         if services_started and data_collector:
             try:
                 await data_collector.stop()
@@ -278,6 +368,10 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Shutting down...")
+
+    # Stop account manager first (no more trades)
+    if account_manager:
+        await account_manager.stop()
 
     # Stop background tasks
     if _price_flush_task:

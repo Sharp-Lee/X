@@ -1,0 +1,43 @@
+# Trading Configuration
+# Copy this file to trading.yaml and customize.
+# If trading.yaml does not exist, defaults to portfolio B with no auto-trading.
+
+# Portfolio selection: "A", "B", or "custom"
+portfolio: "B"
+
+# Custom strategies (only used when portfolio: "custom")
+# strategies:
+#   - symbol: XRPUSDT
+#     timeframe: 30m
+#     enabled: true
+#     streak_lo: 0
+#     streak_hi: 3
+#     atr_pct_threshold: 0.60
+#     position_qty: 50000
+#   - symbol: BTCUSDT
+#     timeframe: 15m
+#     enabled: true
+#     streak_lo: -999
+#     streak_hi: 999
+#     atr_pct_threshold: 0.0
+#     position_qty: 0.01
+
+# Trading accounts (optional - no accounts = signal-only mode)
+# accounts:
+#   - name: "main-account"
+#     api_key_env: "BINANCE_API_KEY_1"       # env var name (not the key itself)
+#     api_secret_env: "BINANCE_API_SECRET_1"  # env var name (not the secret itself)
+#     testnet: true
+#     enabled: true
+#     auto_trade: false
+#     leverage: 5
+#     strategies: []  # empty = trade all portfolio strategies
+#
+#   - name: "xrp-only"
+#     api_key_env: "BINANCE_API_KEY_2"
+#     api_secret_env: "BINANCE_API_SECRET_2"
+#     testnet: false
+#     enabled: true
+#     auto_trade: true
+#     leverage: 5
+#     strategies: ["XRPUSDT_30m", "XRPUSDT_15m"]
