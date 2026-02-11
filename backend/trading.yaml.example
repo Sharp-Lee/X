@@ -31,6 +31,7 @@ portfolio: "B"
 #     enabled: true
 #     auto_trade: false
 #     leverage: 5
+#     risk_pct: 0.015  # risk per trade as fraction of equity (1.5%)
 #     strategies: []  # empty = trade all portfolio strategies
 #
 #   - name: "xrp-only"
@@ -40,4 +41,5 @@ portfolio: "B"
 #     enabled: true
 #     auto_trade: true
 #     leverage: 5
+#     risk_pct: 0.015
 #     strategies: ["XRPUSDT_30m", "XRPUSDT_15m"]

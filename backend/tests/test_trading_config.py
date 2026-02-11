@@ -2,6 +2,7 @@
 
 import os
 import textwrap
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -117,7 +118,16 @@ class TestAccountConfig:
         assert acct.enabled is True
         assert acct.auto_trade is False
         assert acct.leverage == 5
+        assert acct.risk_pct == 0.015
         assert acct.strategies == []
+
+    def test_risk_pct_default(self):
+        acct = AccountConfig(name="test")
+        assert acct.risk_pct == 0.015
+
+    def test_risk_pct_custom(self):
+        acct = AccountConfig(name="test", risk_pct=0.02)
+        assert acct.risk_pct == 0.02
 
     def test_get_enabled_accounts(self):
         config = TradingConfig(
@@ -210,16 +220,18 @@ class TestLoadTradingConfig:
 class TestAccountManager:
     """Test AccountManager signal routing logic (no real API calls)."""
 
-    def _make_signal(self, symbol="XRPUSDT", timeframe="30m"):
+    def _make_signal(self, symbol="XRPUSDT", timeframe="30m",
+                     entry_price=Decimal("2.50"), risk_amount=Decimal("0.265")):
         """Create a minimal mock signal."""
         sig = type("Signal", (), {
             "id": "test-123",
             "symbol": symbol,
             "timeframe": timeframe,
             "direction": type("Dir", (), {"name": "LONG"})(),
-            "entry_price": 0.5,
-            "tp_price": 0.51,
-            "sl_price": 0.48,
+            "entry_price": entry_price,
+            "tp_price": entry_price + Decimal("0.06"),
+            "sl_price": entry_price - risk_amount,
+            "risk_amount": risk_amount,
         })()
         return sig
 
@@ -295,60 +307,103 @@ class TestAccountManager:
         await mgr.execute_signal(self._make_signal())
 
     @pytest.mark.asyncio
-    async def test_execute_signal_no_filter_config(self):
+    async def test_execute_signal_zero_risk_amount(self):
         from app.services.account_manager import AccountManager
 
         config = TradingConfig(
             accounts=[AccountConfig(name="a", enabled=True, auto_trade=True)]
         )
         mgr = AccountManager(config)
-        mgr._accounts["a"] = (config.accounts[0], AsyncMock())
-        # No filters set — should skip
-        await mgr.execute_signal(self._make_signal())
+        mock_svc = AsyncMock()
+        mgr._accounts["a"] = (config.accounts[0], mock_svc)
+
+        # risk_amount = 0 should skip
+        signal = self._make_signal(risk_amount=Decimal("0"))
+        await mgr.execute_signal(signal)
+        mock_svc.execute_signal.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_execute_signal_calls_order_service(self):
+    async def test_execute_signal_dynamic_sizing(self):
+        """Verify dynamic position size = (equity × risk_pct) / risk_amount."""
         from app.services.account_manager import AccountManager
 
         config = TradingConfig(
-            accounts=[AccountConfig(name="a", enabled=True, auto_trade=True, leverage=10)]
+            accounts=[AccountConfig(
+                name="a", enabled=True, auto_trade=True,
+                leverage=10, risk_pct=0.015,
+            )]
         )
         mgr = AccountManager(config)
         mock_svc = AsyncMock()
+        mock_svc.get_balance.return_value = {"total": 2000, "free": 2000, "used": 0}
         mock_svc.execute_signal.return_value = {"orders": [{"id": 1}]}
         mgr._accounts["a"] = (config.accounts[0], mock_svc)
 
-        # Set filter with position_qty
-        filter_cfg = SignalFilterConfig(
-            symbol="XRPUSDT", timeframe="30m", position_qty=50000
-        )
-        mgr.set_filters({filter_cfg.key: filter_cfg})
-
-        signal = self._make_signal("XRPUSDT", "30m")
+        # XRP signal: entry=2.50, risk_amount=0.265
+        signal = self._make_signal("XRPUSDT", "30m",
+                                   entry_price=Decimal("2.50"),
+                                   risk_amount=Decimal("0.265"))
         await mgr.execute_signal(signal)
 
+        mock_svc.get_balance.assert_awaited_once()
         mock_svc.set_leverage.assert_awaited_once_with("XRPUSDT", 10)
         mock_svc.execute_signal.assert_awaited_once()
 
+        # Verify calculated quantity: 2000 * 0.015 / 0.265 ≈ 113.2075
+        call_args = mock_svc.execute_signal.call_args
+        actual_qty = call_args[0][1]  # second positional arg
+        expected_qty = Decimal("2000") * Decimal("0.015") / Decimal("0.265")
+        assert abs(actual_qty - expected_qty) < Decimal("0.0001")
+
     @pytest.mark.asyncio
-    async def test_execute_signal_zero_qty_skips(self):
+    async def test_execute_signal_notional_too_small(self):
+        """Skip trade when notional value < $5."""
         from app.services.account_manager import AccountManager
 
         config = TradingConfig(
-            accounts=[AccountConfig(name="a", enabled=True, auto_trade=True)]
+            accounts=[AccountConfig(
+                name="a", enabled=True, auto_trade=True, risk_pct=0.001,
+            )]
         )
         mgr = AccountManager(config)
         mock_svc = AsyncMock()
+        # Very small account
+        mock_svc.get_balance.return_value = {"total": 10, "free": 10, "used": 0}
         mgr._accounts["a"] = (config.accounts[0], mock_svc)
 
-        # position_qty = 0 should skip
-        filter_cfg = SignalFilterConfig(
-            symbol="XRPUSDT", timeframe="30m", position_qty=0
-        )
-        mgr.set_filters({filter_cfg.key: filter_cfg})
-
-        await mgr.execute_signal(self._make_signal("XRPUSDT", "30m"))
+        # BTC signal: entry=$96000, risk_amount=$2652
+        # qty = (10 * 0.001) / 2652 = 0.0000037 BTC, notional = $0.36
+        signal = self._make_signal("BTCUSDT", "15m",
+                                   entry_price=Decimal("96000"),
+                                   risk_amount=Decimal("2652"))
+        await mgr.execute_signal(signal)
         mock_svc.execute_signal.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_execute_signal_custom_risk_pct(self):
+        """Account with risk_pct=0.02 should size larger."""
+        from app.services.account_manager import AccountManager
+
+        config = TradingConfig(
+            accounts=[AccountConfig(
+                name="a", enabled=True, auto_trade=True, risk_pct=0.02,
+            )]
+        )
+        mgr = AccountManager(config)
+        mock_svc = AsyncMock()
+        mock_svc.get_balance.return_value = {"total": 5000, "free": 5000, "used": 0}
+        mock_svc.execute_signal.return_value = {"orders": [{"id": 1}]}
+        mgr._accounts["a"] = (config.accounts[0], mock_svc)
+
+        signal = self._make_signal("SOLUSDT", "5m",
+                                   entry_price=Decimal("150"),
+                                   risk_amount=Decimal("13.26"))
+        await mgr.execute_signal(signal)
+
+        call_args = mock_svc.execute_signal.call_args
+        actual_qty = call_args[0][1]
+        expected_qty = Decimal("5000") * Decimal("0.02") / Decimal("13.26")
+        assert abs(actual_qty - expected_qty) < Decimal("0.0001")
 
     @pytest.mark.asyncio
     async def test_stop_closes_all(self):

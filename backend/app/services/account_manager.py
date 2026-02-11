@@ -19,7 +19,7 @@ class AccountManager:
         self._filters: dict[str, object] | None = None
 
     def set_filters(self, filters: dict) -> None:
-        """Set signal filter configs for position_qty lookup."""
+        """Set signal filter configs for symbol lookup."""
         self._filters = filters
 
     async def start(self) -> None:
@@ -73,31 +73,56 @@ class AccountManager:
         return result
 
     async def execute_signal(self, signal: SignalRecord) -> None:
-        """Route a signal to all matching accounts for execution."""
+        """Route a signal to all matching accounts with dynamic position sizing.
+
+        Position size = (equity × risk_pct) / risk_amount
+        where risk_amount = SL distance in price units (from signal).
+        """
         if not self._accounts:
             return
 
-        # Look up position_qty from filter config
-        signal_key = f"{signal.symbol}_{signal.timeframe}"
-        filter_config = self._filters.get(signal_key) if self._filters else None
-        if not filter_config or filter_config.position_qty <= 0:
+        risk_amount = signal.risk_amount
+        if risk_amount <= 0:
             logger.warning(
-                "No position_qty for %s, skipping auto-trade", signal_key
+                "Signal %s has zero risk_amount, skipping", signal.id
             )
             return
 
-        quantity = Decimal(str(filter_config.position_qty))
-
         for acct_config, order_svc in self.get_accounts_for_signal(signal):
             try:
+                # Query current account equity
+                balance = await order_svc.get_balance()
+                equity = Decimal(str(balance["free"]))
+
+                # Dynamic position sizing
+                risk_pct = Decimal(str(acct_config.risk_pct))
+                dollar_risk = equity * risk_pct
+                quantity = dollar_risk / risk_amount
+
+                # Skip if notional value too small for exchange
+                notional = quantity * signal.entry_price
+                if notional < 5:
+                    logger.warning(
+                        "Account '%s': %s notional $%.2f too small, skipping",
+                        acct_config.name,
+                        signal.symbol,
+                        notional,
+                    )
+                    continue
+
                 await order_svc.set_leverage(signal.symbol, acct_config.leverage)
                 result = await order_svc.execute_signal(signal, quantity)
                 logger.info(
-                    "Account '%s': executed %s %s (%d orders)",
+                    "Account '%s': %s %s qty=%.6f notional=$%.2f "
+                    "(risk=$%.2f = %.1f%% of $%.2f)",
                     acct_config.name,
                     signal.symbol,
                     signal.direction.name,
-                    len(result.get("orders", [])),
+                    quantity,
+                    notional,
+                    dollar_risk,
+                    acct_config.risk_pct * 100,
+                    equity,
                 )
             except Exception as e:
                 logger.error(

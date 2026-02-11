@@ -54,6 +54,7 @@ class AccountConfig(BaseModel):
     enabled: bool = True
     auto_trade: bool = False
     leverage: int = 5
+    risk_pct: float = 0.015  # risk per trade as fraction of equity (1.5%)
     strategies: list[str] = []  # empty = all strategies in portfolio
 
     @property
