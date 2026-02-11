@@ -133,11 +133,13 @@ class TestConcurrentSignals:
                 with patch('app.storage.signal_cache.remove_signal', new_callable=AsyncMock, return_value=True):
                     with patch('app.storage.signal_cache.get_all_signals', new_callable=AsyncMock, return_value=[]):
                         symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
+                        timeframes = ["1m", "3m", "5m", "15m", "30m"]
                         prices = {"BTCUSDT": 50000, "ETHUSDT": 3000, "SOLUSDT": 100, "BNBUSDT": 300}
 
-                        # Create 20 signals (5 per symbol)
+                        # Create 20 signals (5 per symbol, each with unique timeframe)
                         for i in range(20):
                             symbol = symbols[i % len(symbols)]
+                            tf = timeframes[i // len(symbols)]
                             base_price = prices[symbol]
                             is_long = i % 2 == 0
 
@@ -151,7 +153,7 @@ class TestConcurrentSignals:
 
                             signal = SignalRecord(
                                 symbol=symbol,
-                                timeframe="1m",
+                                timeframe=tf,
                                 signal_time=datetime.now(timezone.utc),
                                 direction=Direction.LONG if is_long else Direction.SHORT,
                                 entry_price=Decimal(str(base_price)),

@@ -99,6 +99,7 @@ class PositionTracker:
 
         Tries to load from Redis cache first for fast startup.
         Falls back to database if cache is unavailable or empty.
+        Enforces one active signal per symbol+timeframe (keeps newest).
         Syncs loaded signals to cache for next startup.
         """
         async with self._lock:
@@ -108,47 +109,95 @@ class PositionTracker:
             cached_signals = await signal_cache.get_all_signals()
 
             if cached_signals:
-                # Cache hit - use cached data
                 self._cache_hits += 1
-                for fast_signal in cached_signals:
-                    if fast_signal.symbol not in self._active_signals:
-                        self._active_signals[fast_signal.symbol] = []
-                    self._active_signals[fast_signal.symbol].append(fast_signal)
-
-                total = sum(len(s) for s in self._active_signals.values())
-                logger.info(f"Loaded {total} active signals from cache")
+                raw_signals = cached_signals
+                source = "cache"
             else:
-                # Cache miss - load from database
                 self._cache_misses += 1
                 signals = await self.signal_repo.get_active()
+                raw_signals = [signal_to_fast(s) for s in signals]
+                source = "database"
 
-                for signal in signals:
-                    fast_signal = signal_to_fast(signal)
-                    if fast_signal.symbol not in self._active_signals:
-                        self._active_signals[fast_signal.symbol] = []
-                    self._active_signals[fast_signal.symbol].append(fast_signal)
+            # Deduplicate: keep only newest signal per symbol+timeframe
+            best: dict[str, FastSignal] = {}
+            duplicates: list[FastSignal] = []
+            for fs in raw_signals:
+                key = f"{fs.symbol}_{fs.timeframe}"
+                if key not in best or fs.signal_time > best[key].signal_time:
+                    if key in best:
+                        duplicates.append(best[key])
+                    best[key] = fs
+                else:
+                    duplicates.append(fs)
 
-                total = sum(len(s) for s in self._active_signals.values())
-                logger.info(f"Loaded {total} active signals from database")
+            # Mark duplicates as SL (expired) in database
+            if duplicates:
+                logger.warning(
+                    "Closing %d duplicate active signals (keeping newest per symbol+timeframe)",
+                    len(duplicates),
+                )
+                for dup in duplicates:
+                    try:
+                        from decimal import Decimal
+                        await self.signal_repo.update_outcome(
+                            signal_id=dup.id,
+                            mae_ratio=Decimal(str(dup.mae_ratio)),
+                            mfe_ratio=Decimal(str(dup.mfe_ratio)),
+                            outcome=Outcome.SL,
+                            outcome_time=None,
+                            outcome_price=None,
+                        )
+                        await signal_cache.remove_signal(dup.id, dup.symbol)
+                        logger.info(f"Closed stale signal {dup.id} ({dup.symbol}_{dup.timeframe})")
+                    except Exception as e:
+                        logger.error(f"Failed to close stale signal {dup.id}: {e}")
 
-                # Sync to cache for next startup
-                # Note: We're already holding the lock, so directly access _active_signals
-                if total > 0:
-                    all_signals = [
-                        signal
-                        for signals in self._active_signals.values()
-                        for signal in signals
-                    ]
-                    await signal_cache.sync_from_db(all_signals)
+            # Load deduplicated signals
+            for fs in best.values():
+                if fs.symbol not in self._active_signals:
+                    self._active_signals[fs.symbol] = []
+                self._active_signals[fs.symbol].append(fs)
+
+            total = sum(len(s) for s in self._active_signals.values())
+            logger.info(f"Loaded {total} active signals from {source}")
+
+            # Sync to cache
+            if total > 0:
+                all_signals = [
+                    signal
+                    for signals in self._active_signals.values()
+                    for signal in signals
+                ]
+                await signal_cache.sync_from_db(all_signals)
 
     async def add_signal(self, signal: SignalRecord) -> None:
         """Add a new signal to track.
+
+        Enforces one active signal per symbol+timeframe.
 
         Args:
             signal: Cold path SignalRecord (converted to FastSignal internally)
         """
         async with self._lock:
             fast_signal = signal_to_fast(signal)
+            key = f"{fast_signal.symbol}_{fast_signal.timeframe}"
+
+            # Check for existing active signal on same symbol+timeframe
+            if fast_signal.symbol in self._active_signals:
+                existing = [
+                    s for s in self._active_signals[fast_signal.symbol]
+                    if f"{s.symbol}_{s.timeframe}" == key
+                ]
+                if existing:
+                    logger.warning(
+                        "Replacing active signal for %s: %s -> %s",
+                        key, existing[0].id[:12], fast_signal.id[:12],
+                    )
+                    self._active_signals[fast_signal.symbol] = [
+                        s for s in self._active_signals[fast_signal.symbol]
+                        if f"{s.symbol}_{s.timeframe}" != key
+                    ]
+
             if fast_signal.symbol not in self._active_signals:
                 self._active_signals[fast_signal.symbol] = []
             self._active_signals[fast_signal.symbol].append(fast_signal)
