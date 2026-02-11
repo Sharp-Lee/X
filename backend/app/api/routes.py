@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from app.config import get_settings
@@ -424,6 +424,19 @@ async def set_leverage(symbol: str, leverage: int = Query(10, ge=1, le=125)):
         }
     finally:
         await order_service.close()
+
+
+# ---------- Trading Overview ----------
+
+
+@router.get("/trading/overview")
+async def get_trading_overview(request: Request):
+    """Get overview of all active trading accounts with balances and positions."""
+    mgr = getattr(request.app.state, "account_manager", None)
+    if not mgr:
+        return {"accounts": [], "enabled": False}
+    overview = await mgr.get_overview()
+    return {"accounts": overview, "enabled": True}
 
 
 # ---------- Analytics ----------

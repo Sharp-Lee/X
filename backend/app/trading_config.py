@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 
 import yaml
+from dotenv import load_dotenv
 from pydantic import BaseModel, model_validator
 
 from core.models.config import SignalFilterConfig, PORTFOLIO_A, PORTFOLIO_B
@@ -113,6 +114,10 @@ def load_trading_config(path: Path | None = None) -> TradingConfig:
     Falls back to defaults (portfolio B, no accounts) if file doesn't exist.
     """
     config_path = path or _DEFAULT_PATH
+
+    # Load .env into os.environ so AccountConfig.api_key/api_secret can read them
+    env_path = config_path.parent / ".env"
+    load_dotenv(env_path, override=False)
 
     if not config_path.exists():
         logger.info(

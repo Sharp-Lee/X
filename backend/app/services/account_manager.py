@@ -107,6 +107,48 @@ class AccountManager:
                     e,
                 )
 
+    def _get_traded_symbols(self, acct: AccountConfig) -> list[str]:
+        """Extract unique symbols this account trades."""
+        if acct.strategies:
+            # "XRPUSDT_30m" → "XRPUSDT"
+            symbols = {s.rsplit("_", 1)[0] for s in acct.strategies}
+            return sorted(symbols)
+        # No strategy filter → all symbols from portfolio filters
+        if self._filters:
+            return sorted({k.rsplit("_", 1)[0] for k in self._filters})
+        return []
+
+    async def get_overview(self) -> list[dict]:
+        """Get balance and positions for all active accounts."""
+        results = []
+        for name, (acct, order_svc) in self._accounts.items():
+            entry: dict = {
+                "name": name,
+                "testnet": acct.testnet,
+                "leverage": acct.leverage,
+                "strategies": acct.strategies if acct.strategies else "ALL",
+            }
+            try:
+                balance = await order_svc.get_balance()
+                entry["balance"] = balance
+
+                positions = []
+                for symbol in self._get_traded_symbols(acct):
+                    try:
+                        pos = await order_svc.get_position(symbol)
+                        if pos and pos.get("contracts", 0) != 0:
+                            positions.append(pos)
+                    except Exception:
+                        pass
+                entry["positions"] = positions
+            except Exception as e:
+                entry["error"] = str(e)
+                entry["balance"] = {"total": 0, "free": 0, "used": 0}
+                entry["positions"] = []
+
+            results.append(entry)
+        return results
+
     @property
     def active_count(self) -> int:
         return len(self._accounts)

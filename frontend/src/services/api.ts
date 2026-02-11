@@ -136,6 +136,32 @@ export interface AnalyticsSummary {
   mae_mfe: Record<string, MaeMfeStats>
 }
 
+// --- Trading Account Types ---
+
+export interface TradingPosition {
+  symbol: string
+  side: string
+  contracts: number
+  entry_price: number
+  unrealized_pnl: number
+  leverage: number
+}
+
+export interface TradingAccount {
+  name: string
+  testnet: boolean
+  leverage: number
+  strategies: string[] | string
+  balance: { total: number; free: number; used: number }
+  positions: TradingPosition[]
+  error?: string
+}
+
+export interface TradingOverview {
+  enabled: boolean
+  accounts: TradingAccount[]
+}
+
 export const api = {
   async getStatus(): Promise<SystemStatus> {
     return fetchJson(`${API_BASE}/status`);
@@ -185,5 +211,9 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(order),
     });
+  },
+
+  async getTradingOverview(): Promise<TradingOverview> {
+    return fetchJson(`${API_BASE}/trading/overview`);
   },
 };

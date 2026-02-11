@@ -334,6 +334,9 @@ async def lifespan(app: FastAPI):
                 account_manager.active_count,
             )
 
+        # Expose account_manager to API routes via app.state
+        app.state.account_manager = account_manager
+
         # Start background price cache flush task
         _price_flush_task = asyncio.create_task(_periodic_price_flush())
         logger.info("Price cache flush task started")
@@ -370,6 +373,7 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down...")
 
     # Stop account manager first (no more trades)
+    app.state.account_manager = None
     if account_manager:
         await account_manager.stop()
 

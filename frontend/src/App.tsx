@@ -5,6 +5,7 @@ import { Footer } from '@/components/layout/Footer'
 import { SignalTable } from '@/components/signals/SignalTable'
 import { ActivePositions } from '@/components/signals/ActivePositions'
 import { StatsGrid } from '@/components/stats/StatsGrid'
+import { TradingPanel } from '@/components/trading/TradingPanel'
 import { TradingChart } from '@/components/chart/TradingChart'
 import { TimeframeTabs } from '@/features/multi-timeframe/TimeframeTabs'
 import { TimeframeGrid } from '@/features/multi-timeframe/TimeframeGrid'
@@ -57,6 +58,7 @@ function Dashboard() {
             <div className="grid gap-6 lg:grid-cols-[350px_1fr]">
               {/* Left Panel */}
               <div className="space-y-6 order-2 lg:order-1">
+                <TradingPanel />
                 <ActivePositions
                   signals={activeSignals}
                   onSelect={handleSignalClick}
