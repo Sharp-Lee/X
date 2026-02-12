@@ -47,6 +47,7 @@ class SystemStatus(BaseModel):
     symbols: list[str]
     timeframes: list[str]
     active_signals: int
+    startup_phase: str = "live"
 
 
 class OrderRequest(BaseModel):
@@ -72,11 +73,17 @@ def get_signal_repo() -> SignalRepository:
 
 
 @router.get("/status", response_model=SystemStatus)
-async def get_status():
+async def get_status(request: Request):
     """Get system status."""
     settings = get_settings()
     repo = get_signal_repo()
     active = await repo.get_active()
+
+    # Get startup phase from data collector if available
+    startup_phase = "live"
+    dc = getattr(request.app.state, "data_collector", None)
+    if dc is not None:
+        startup_phase = dc.startup_phase
 
     return SystemStatus(
         status="running",
@@ -84,6 +91,7 @@ async def get_status():
         symbols=settings.symbols,
         timeframes=settings.timeframes,
         active_signals=len(active),
+        startup_phase=startup_phase,
     )
 
 

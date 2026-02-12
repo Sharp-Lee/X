@@ -290,6 +290,7 @@ async def lifespan(app: FastAPI):
         await warmup_atr_tracker(atr_tracker, portfolio_keys, settings.atr_period)
 
         data_collector = DataCollector()
+        app.state.data_collector = data_collector
         signal_generator = SignalGenerator(
             config=config,
             save_signal=signal_repo.save,

@@ -9,7 +9,7 @@ import {
 } from '@/components/ui/table'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { DirectionBadge, OutcomeBadge } from './SignalBadge'
-import { formatPrice, formatTime } from '@/lib/utils'
+import { formatPrice, formatTime, formatDateTime } from '@/lib/utils'
 import { cn } from '@/lib/utils'
 
 interface SignalTableProps {
@@ -56,6 +56,7 @@ export function SignalTable({ signals, title, onSignalClick, className }: Signal
               <TableHead className="text-right">TP</TableHead>
               <TableHead className="text-right">SL</TableHead>
               <TableHead>Outcome</TableHead>
+              <TableHead>Closed</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -67,8 +68,8 @@ export function SignalTable({ signals, title, onSignalClick, className }: Signal
                 )}
                 onClick={() => onSignalClick?.(signal)}
               >
-                <TableCell className="font-mono text-xs">
-                  {formatTime(signal.signal_time)}
+                <TableCell className="font-mono text-xs whitespace-nowrap">
+                  {formatDateTime(signal.signal_time)}
                 </TableCell>
                 <TableCell className="font-medium">{signal.symbol}</TableCell>
                 <TableCell>{signal.timeframe}</TableCell>
@@ -86,6 +87,9 @@ export function SignalTable({ signals, title, onSignalClick, className }: Signal
                 </TableCell>
                 <TableCell>
                   <OutcomeBadge outcome={signal.outcome} />
+                </TableCell>
+                <TableCell className="font-mono text-xs whitespace-nowrap">
+                  {signal.outcome_time ? formatDateTime(signal.outcome_time) : '-'}
                 </TableCell>
               </TableRow>
             ))}

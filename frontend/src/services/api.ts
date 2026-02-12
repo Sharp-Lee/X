@@ -25,8 +25,9 @@ export interface SystemStatus {
   status: string;
   version: string;
   symbols: string[];
-  timeframe: string;
+  timeframes: string[];
   active_signals: number;
+  startup_phase: string;
 }
 
 export interface Stats {

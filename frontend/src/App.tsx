@@ -12,6 +12,7 @@ import { TimeframeGrid } from '@/features/multi-timeframe/TimeframeGrid'
 import { AnalyticsPage } from '@/features/analytics/AnalyticsPage'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useSignals } from '@/hooks/useSignals'
+import { useSystemStatus } from '@/hooks/useSystemStatus'
 import type { Signal } from '@/services/api'
 import '@/styles/globals.css'
 
@@ -21,6 +22,7 @@ function Dashboard() {
   const [selectedSignal, setSelectedSignal] = useState<Signal | null>(null)
   const [view, setView] = useState('dashboard')
   const { signals, activeSignals, isLoading, error, isConnected } = useSignals(selectedSymbol)
+  const { isStarting, phaseLabel } = useSystemStatus()
 
   // Client-side timeframe filtering
   const filteredSignals = selectedTimeframe
@@ -44,13 +46,20 @@ function Dashboard() {
         isConnected={isConnected}
       />
 
+      {isStarting && (
+        <div className="border-b border-warning bg-warning/20 px-6 py-2 text-warning text-sm flex items-center gap-2">
+          <span className="h-2 w-2 rounded-full bg-warning animate-pulse" />
+          Starting up: {phaseLabel}
+        </div>
+      )}
+
       {error && (
         <div className="border-b border-destructive bg-destructive/20 px-6 py-3 text-destructive">
           {error}
         </div>
       )}
 
-      {isLoading && view === 'dashboard' && (
+      {isLoading && !isStarting && view === 'dashboard' && (
         <div className="border-b border-primary bg-primary/20 px-6 py-3 text-primary">
           Loading signals...
         </div>

@@ -91,6 +91,9 @@ class DataCollector:
         # Replay service for state recovery
         self._replay_service = KlineReplayService(self.kline_repo, self.state_repo)
 
+        # Startup phase tracking
+        self._startup_phase: str = "idle"  # idle, init, check_state, backfill, restore, replay, live
+
         # Signal generator reference (set by App during initialization)
         self._signal_generator = None
 
@@ -135,6 +138,11 @@ class DataCollector:
     def is_replaying(self) -> bool:
         """Check if replay is in progress."""
         return self._replay_service.is_replaying
+
+    @property
+    def startup_phase(self) -> str:
+        """Current startup phase: idle, init, check_state, backfill, restore, replay, live."""
+        return self._startup_phase
 
     def get_kline_buffer(self, symbol: str, timeframe: str | None = None) -> KlineBuffer | None:
         """Get the kline buffer for a symbol and timeframe.
@@ -360,6 +368,7 @@ class DataCollector:
         logger.info("=" * 60)
         logger.info("STARTUP PHASE 1: Initialize")
         logger.info("=" * 60)
+        self._startup_phase = "init"
         self._buffering_mode = True
 
         # Subscribe to WebSocket streams - ONLY 1m klines
@@ -376,6 +385,7 @@ class DataCollector:
         logger.info("=" * 60)
         logger.info("STARTUP PHASE 2: Check Processing State")
         logger.info("=" * 60)
+        self._startup_phase = "check_state"
 
         # Check for crashed replays that need recovery
         pending_states = await self._replay_service.check_pending_recovery()
@@ -414,6 +424,7 @@ class DataCollector:
         logger.info("=" * 60)
         logger.info("STARTUP PHASE 3: Gap Detection & Backfill")
         logger.info("=" * 60)
+        self._startup_phase = "backfill"
 
         for symbol in symbols:
             state = await self.state_repo.get_state(symbol, "1m")
@@ -447,6 +458,7 @@ class DataCollector:
         logger.info("=" * 60)
         logger.info("STARTUP PHASE 4: Buffer Restoration")
         logger.info("=" * 60)
+        self._startup_phase = "restore"
 
         for symbol in symbols:
             state = await self.state_repo.get_state(symbol, "1m")
@@ -464,6 +476,7 @@ class DataCollector:
         logger.info("=" * 60)
         logger.info("STARTUP PHASE 5: Replay")
         logger.info("=" * 60)
+        self._startup_phase = "replay"
 
         for symbol in symbols:
             state = await self.state_repo.get_state(symbol, "1m")
@@ -489,6 +502,7 @@ class DataCollector:
         logger.info("=" * 60)
         logger.info("STARTUP PHASE 6: Go Live")
         logger.info("=" * 60)
+        self._startup_phase = "live"
 
         # Process buffered WebSocket data and switch to live mode
         buffered = await self.flush_buffer_and_go_live()
@@ -550,10 +564,15 @@ class DataCollector:
             symbol, timeframe, start_time, end_time
         )
 
-        if len(timestamps) < 2:
-            return []
-
         gaps = []
+
+        if not timestamps:
+            # No data at all in range — entire range is a gap
+            if end_time > start_time + interval + timedelta(seconds=30):
+                gaps.append((start_time + interval, end_time))
+            return gaps
+
+        # Check gaps between consecutive timestamps
         for i in range(1, len(timestamps)):
             expected = timestamps[i - 1] + interval
             actual = timestamps[i]
@@ -561,6 +580,11 @@ class DataCollector:
             # Allow small tolerance (30 seconds) for timestamp drift
             if actual > expected + timedelta(seconds=30):
                 gaps.append((expected, actual))
+
+        # Check trailing gap: last timestamp to end_time
+        last_expected = timestamps[-1] + interval
+        if end_time > last_expected + timedelta(seconds=30):
+            gaps.append((last_expected, end_time))
 
         return gaps
 

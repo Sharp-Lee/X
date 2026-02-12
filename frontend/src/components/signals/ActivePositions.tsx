@@ -2,7 +2,7 @@ import type { Signal } from '@/services/api'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Progress } from '@/components/ui/progress'
 import { DirectionBadge } from './SignalBadge'
-import { formatPrice } from '@/lib/utils'
+import { formatPrice, formatDateTime } from '@/lib/utils'
 import { cn } from '@/lib/utils'
 
 interface ActivePositionsProps {
@@ -121,9 +121,12 @@ function PositionCard({ signal, onClick }: PositionCardProps) {
         </div>
       </div>
 
-      {/* Timeframe */}
+      {/* Timeframe & Time */}
       <div className="text-xs text-muted-foreground">
         {signal.timeframe} | Streak: {signal.streak_at_signal}
+      </div>
+      <div className="text-xs text-muted-foreground">
+        {formatDateTime(signal.signal_time)}
       </div>
     </div>
   )
