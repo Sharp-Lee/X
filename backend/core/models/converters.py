@@ -205,6 +205,7 @@ def signal_to_fast(signal: SignalRecord) -> FastSignal:
     """
     return FastSignal(
         id=signal.id,
+        strategy=signal.strategy,
         symbol=signal.symbol,
         timeframe=signal.timeframe,
         signal_time=datetime_to_timestamp(signal.signal_time),
@@ -240,6 +241,7 @@ def fast_to_signal(fast: FastSignal) -> SignalRecord:
     """
     return SignalRecord(
         id=fast.id,
+        strategy=fast.strategy,
         symbol=fast.symbol,
         timeframe=fast.timeframe,
         signal_time=timestamp_to_datetime(fast.signal_time),

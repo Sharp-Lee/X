@@ -202,7 +202,7 @@ async def check_data(fix_duplicates: bool = False):
         SELECT
             outcome,
             COUNT(*) as cnt
-        FROM signals
+        FROM msr_signals
         GROUP BY outcome
     """)
 

@@ -33,9 +33,10 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     status          TEXT DEFAULT 'running'
 );
 
-CREATE TABLE IF NOT EXISTS backtest_signals (
+CREATE TABLE IF NOT EXISTS backtest_msr_signals (
     id              TEXT NOT NULL,
     run_id          TEXT NOT NULL REFERENCES backtest_runs(id) ON DELETE CASCADE,
+    strategy        VARCHAR(50) NOT NULL DEFAULT 'msr_retest_capture',
     symbol          VARCHAR(20) NOT NULL,
     timeframe       VARCHAR(10) NOT NULL,
     signal_time     TIMESTAMPTZ NOT NULL,
@@ -55,10 +56,37 @@ CREATE TABLE IF NOT EXISTS backtest_signals (
 );
 
 -- Indexes for analytical queries
-CREATE INDEX IF NOT EXISTS idx_bt_signals_run_outcome
-    ON backtest_signals(run_id, outcome);
-CREATE INDEX IF NOT EXISTS idx_bt_signals_run_symbol_tf
-    ON backtest_signals(run_id, symbol, timeframe, outcome);
+CREATE INDEX IF NOT EXISTS idx_bt_msr_signals_run_outcome
+    ON backtest_msr_signals(run_id, outcome);
+CREATE INDEX IF NOT EXISTS idx_bt_msr_signals_run_symbol_tf
+    ON backtest_msr_signals(run_id, symbol, timeframe, outcome);
+
+CREATE TABLE IF NOT EXISTS backtest_ema_signals (
+    id              TEXT NOT NULL,
+    run_id          TEXT NOT NULL REFERENCES backtest_runs(id) ON DELETE CASCADE,
+    strategy        VARCHAR(50) NOT NULL DEFAULT 'ema_crossover',
+    symbol          VARCHAR(20) NOT NULL,
+    timeframe       VARCHAR(10) NOT NULL,
+    signal_time     TIMESTAMPTZ NOT NULL,
+    direction       INTEGER NOT NULL,
+    entry_price     NUMERIC(20,8) NOT NULL,
+    tp_price        NUMERIC(20,8) NOT NULL,
+    sl_price        NUMERIC(20,8) NOT NULL,
+    ema_fast        NUMERIC(20,8) DEFAULT 0,
+    ema_slow        NUMERIC(20,8) DEFAULT 0,
+    atr_at_signal   NUMERIC(20,8) DEFAULT 0,
+    mae_ratio       NUMERIC(10,6) DEFAULT 0,
+    mfe_ratio       NUMERIC(10,6) DEFAULT 0,
+    outcome         VARCHAR(10) DEFAULT 'active',
+    outcome_time    TIMESTAMPTZ,
+    outcome_price   NUMERIC(20,8),
+    PRIMARY KEY (run_id, id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bt_ema_signals_run_outcome
+    ON backtest_ema_signals(run_id, outcome);
+CREATE INDEX IF NOT EXISTS idx_bt_ema_signals_run_symbol_tf
+    ON backtest_ema_signals(run_id, symbol, timeframe, outcome);
 """
 
 

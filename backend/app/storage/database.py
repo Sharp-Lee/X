@@ -58,12 +58,13 @@ class AggTradeTable(Base):
     )
 
 
-class SignalTable(Base):
-    """Trading signal records table."""
+class MsrSignalTable(Base):
+    """MSR strategy signal records table."""
 
-    __tablename__ = "signals"
+    __tablename__ = "msr_signals"
 
     id = Column(String(36), primary_key=True)
+    strategy = Column(String(50), nullable=False, default="msr_retest_capture")
     symbol = Column(String(20), nullable=False)
     timeframe = Column(String(10), nullable=False)
     signal_time = Column(DateTime(timezone=True), nullable=False)
@@ -81,10 +82,43 @@ class SignalTable(Base):
     outcome_price = Column(Numeric(20, 8), nullable=True)
 
     __table_args__ = (
-        Index("idx_signals_symbol_time", "symbol", "signal_time"),
-        Index("idx_signals_outcome", "outcome"),
-        # Composite index for get_active() queries: WHERE symbol = X AND outcome = Y
-        Index("idx_signals_symbol_tf_outcome", "symbol", "timeframe", "outcome"),
+        Index("idx_msr_signals_symbol_time", "symbol", "signal_time"),
+        Index("idx_msr_signals_outcome", "outcome"),
+        Index("idx_msr_signals_symbol_tf_outcome", "symbol", "timeframe", "outcome"),
+    )
+
+
+# Backward-compat alias so existing code referencing SignalTable still works
+SignalTable = MsrSignalTable
+
+
+class EmaSignalTable(Base):
+    """EMA Crossover strategy signal records table."""
+
+    __tablename__ = "ema_signals"
+
+    id = Column(String(36), primary_key=True)
+    strategy = Column(String(50), nullable=False, default="ema_crossover")
+    symbol = Column(String(20), nullable=False)
+    timeframe = Column(String(10), nullable=False)
+    signal_time = Column(DateTime(timezone=True), nullable=False)
+    direction = Column(Integer, nullable=False)  # 1 = LONG, -1 = SHORT
+    entry_price = Column(Numeric(20, 8), nullable=False)
+    tp_price = Column(Numeric(20, 8), nullable=False)
+    sl_price = Column(Numeric(20, 8), nullable=False)
+    ema_fast = Column(Numeric(20, 8), default=0)
+    ema_slow = Column(Numeric(20, 8), default=0)
+    atr_at_signal = Column(Numeric(20, 8), default=0)
+    mae_ratio = Column(Numeric(10, 6), default=0)
+    mfe_ratio = Column(Numeric(10, 6), default=0)
+    outcome = Column(String(10), default="active")
+    outcome_time = Column(DateTime(timezone=True), nullable=True)
+    outcome_price = Column(Numeric(20, 8), nullable=True)
+
+    __table_args__ = (
+        Index("idx_ema_signals_symbol_time", "symbol", "signal_time"),
+        Index("idx_ema_signals_outcome", "outcome"),
+        Index("idx_ema_signals_symbol_tf_outcome", "symbol", "timeframe", "outcome"),
     )
 
 

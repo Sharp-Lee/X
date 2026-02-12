@@ -39,6 +39,7 @@ class SignalRecord(BaseModel):
     """Trading signal record."""
 
     id: str = ""  # Will be set in model_post_init
+    strategy: str = "msr_retest_capture"  # Default for backward compatibility
     symbol: str
     timeframe: str
     signal_time: datetime

@@ -39,13 +39,14 @@ from app.api import router, manager, websocket_endpoint
 from app.config import get_settings
 from app.core import is_talib_available
 from app.models import Outcome, SignalRecord, StrategyConfig
-from app.services import DataCollector, SignalGenerator, PositionTracker
+from app.services import DataCollector, PositionTracker
 from app.services.account_manager import AccountManager
 from app.storage import init_database, get_database, cache, price_cache
 from app.storage import ProcessingStateRepository, SignalRepository, KlineRepository
 from app.storage import streak_cache
 from app.trading_config import load_trading_config
 from core.atr_tracker import AtrPercentileTracker
+from core.strategy import create_strategy
 
 # Startup timeout in seconds
 STARTUP_TIMEOUT = 120
@@ -54,7 +55,7 @@ logger = logging.getLogger(__name__)
 
 # Global services
 data_collector: DataCollector | None = None
-signal_generator: SignalGenerator | None = None
+signal_generator = None  # Strategy instance (MsrStrategy or other)
 position_tracker: PositionTracker | None = None
 account_manager: AccountManager | None = None
 _price_flush_task: asyncio.Task | None = None
@@ -83,6 +84,7 @@ async def on_new_signal(signal: SignalRecord) -> None:
     # Broadcast via WebSocket
     await manager.send_signal({
         "id": signal.id,
+        "strategy": getattr(signal, "strategy", "msr_retest_capture"),
         "symbol": signal.symbol,
         "timeframe": signal.timeframe,
         "signal_time": signal.signal_time.isoformat(),
@@ -291,7 +293,12 @@ async def lifespan(app: FastAPI):
 
         data_collector = DataCollector()
         app.state.data_collector = data_collector
-        signal_generator = SignalGenerator(
+
+        # Use strategy registry to create the signal generator.
+        # strategy_name comes from trading_config (default: "msr_retest_capture")
+        strategy_name = trading_config.strategy_name
+        signal_generator = create_strategy(
+            strategy_name,
             config=config,
             save_signal=signal_repo.save,
             save_streak=streak_cache.save_streak,
@@ -300,6 +307,7 @@ async def lifespan(app: FastAPI):
             filters=signal_filters,
             atr_tracker=atr_tracker,
         )
+        logger.info(f"Strategy: {strategy_name}")
         position_tracker = PositionTracker()
 
         # Load streak trackers and active positions

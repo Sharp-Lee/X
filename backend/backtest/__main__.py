@@ -109,6 +109,12 @@ Examples:
         help="Output file path for JSON results",
     )
     parser.add_argument(
+        "--strategy",
+        type=str,
+        default="msr_retest_capture",
+        help='Strategy name (default: "msr_retest_capture")',
+    )
+    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Verbose logging",
@@ -165,6 +171,7 @@ async def cmd_run_backtest(args: argparse.Namespace, db: BacktestDatabase) -> No
     end_date = args.end.replace(hour=23, minute=59, second=59)
 
     print(f"\nBacktest: {', '.join(symbols)}")
+    print(f"Strategy: {args.strategy}")
     print(f"Period: {args.start:%Y-%m-%d} → {end_date:%Y-%m-%d}")
     print(f"Timeframes: {', '.join(timeframes)}")
 
@@ -174,6 +181,7 @@ async def cmd_run_backtest(args: argparse.Namespace, db: BacktestDatabase) -> No
         start_date=args.start,
         end_date=end_date,
         strategy=StrategyConfig(),
+        strategy_name=args.strategy,
     )
 
     # Optional: download data first

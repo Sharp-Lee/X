@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Providers } from '@/app/providers'
 import { Header } from '@/components/layout/Header'
 import { Footer } from '@/components/layout/Footer'
@@ -13,24 +13,39 @@ import { AnalyticsPage } from '@/features/analytics/AnalyticsPage'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useSignals } from '@/hooks/useSignals'
 import { useSystemStatus } from '@/hooks/useSystemStatus'
+import { api } from '@/services/api'
 import type { Signal } from '@/services/api'
 import '@/styles/globals.css'
 
 function Dashboard() {
   const [selectedSymbol, setSelectedSymbol] = useState<string | undefined>()
   const [selectedTimeframe, setSelectedTimeframe] = useState<string | undefined>()
+  const [selectedStrategy, setSelectedStrategy] = useState<string | undefined>()
+  const [strategies, setStrategies] = useState<string[]>([])
   const [selectedSignal, setSelectedSignal] = useState<Signal | null>(null)
   const [view, setView] = useState('dashboard')
   const { signals, activeSignals, isLoading, error, isConnected } = useSignals(selectedSymbol)
   const { isStarting, phaseLabel } = useSystemStatus()
 
-  // Client-side timeframe filtering
-  const filteredSignals = selectedTimeframe
-    ? signals.filter((s) => s.timeframe === selectedTimeframe)
-    : signals
-  const filteredActive = selectedTimeframe
-    ? activeSignals.filter((s) => s.timeframe === selectedTimeframe)
-    : activeSignals
+  // Fetch strategy list once on mount
+  useEffect(() => {
+    api.getStrategies().then(setStrategies).catch(() => {})
+  }, [])
+
+  // Client-side strategy + timeframe filtering
+  const applyFilters = (list: Signal[]) => {
+    let result = list
+    if (selectedTimeframe) {
+      result = result.filter((s) => s.timeframe === selectedTimeframe)
+    }
+    if (selectedStrategy) {
+      result = result.filter((s) => (s.strategy || 'msr_retest_capture') === selectedStrategy)
+    }
+    return result
+  }
+
+  const filteredSignals = applyFilters(signals)
+  const filteredActive = applyFilters(activeSignals)
 
   const handleSignalClick = (signal: Signal) => {
     setSelectedSignal(signal)
@@ -43,6 +58,9 @@ function Dashboard() {
         onSymbolChange={setSelectedSymbol}
         selectedTimeframe={selectedTimeframe}
         onTimeframeChange={setSelectedTimeframe}
+        selectedStrategy={selectedStrategy}
+        onStrategyChange={setSelectedStrategy}
+        strategies={strategies}
         isConnected={isConnected}
       />
 

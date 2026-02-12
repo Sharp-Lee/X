@@ -49,6 +49,7 @@ export function SignalTable({ signals, title, onSignalClick, className }: Signal
           <TableHeader>
             <TableRow>
               <TableHead>Time</TableHead>
+              <TableHead>Strategy</TableHead>
               <TableHead>Symbol</TableHead>
               <TableHead>TF</TableHead>
               <TableHead>Direction</TableHead>
@@ -70,6 +71,9 @@ export function SignalTable({ signals, title, onSignalClick, className }: Signal
               >
                 <TableCell className="font-mono text-xs whitespace-nowrap">
                   {formatDateTime(signal.signal_time)}
+                </TableCell>
+                <TableCell className="text-xs text-muted-foreground">
+                  {(signal.strategy || 'msr_retest_capture').replace(/_/g, ' ')}
                 </TableCell>
                 <TableCell className="font-medium">{signal.symbol}</TableCell>
                 <TableCell>{signal.timeframe}</TableCell>

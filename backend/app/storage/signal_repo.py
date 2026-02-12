@@ -10,7 +10,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import AggTrade, Direction, Outcome, SignalRecord
-from app.storage.database import AggTradeTable, SignalTable, get_database
+from app.storage.database import AggTradeTable, MsrSignalTable, SignalTable, get_database
 
 
 class SignalRepository:
@@ -19,8 +19,9 @@ class SignalRepository:
     async def save(self, signal: SignalRecord) -> None:
         """Save a new signal record."""
         async with get_database().session() as session:
-            stmt = insert(SignalTable).values(
+            stmt = insert(MsrSignalTable).values(
                 id=signal.id,
+                strategy=signal.strategy,
                 symbol=signal.symbol,
                 timeframe=signal.timeframe,
                 signal_time=signal.signal_time,
@@ -73,7 +74,7 @@ class SignalRepository:
                 values["max_atr"] = max_atr
 
             stmt = (
-                update(SignalTable)
+                update(MsrSignalTable)
                 .where(SignalTable.id == signal_id)
                 .values(**values)
             )
@@ -221,7 +222,7 @@ class SignalRepository:
                         COUNT(*) FILTER (WHERE outcome = 'tp')::numeric
                         / NULLIF(COUNT(*), 0) * 100, 2
                     ) AS win_rate
-                FROM signals
+                FROM msr_signals
                 WHERE outcome != 'active'
                 GROUP BY symbol
                 ORDER BY win_rate DESC
@@ -241,7 +242,7 @@ class SignalRepository:
                         COUNT(*) FILTER (WHERE outcome = 'tp')::numeric
                         / NULLIF(COUNT(*), 0) * 100, 2
                     ) AS win_rate
-                FROM signals
+                FROM msr_signals
                 WHERE outcome != 'active'
                 GROUP BY timeframe
                 ORDER BY win_rate DESC
@@ -261,7 +262,7 @@ class SignalRepository:
                         COUNT(*) FILTER (WHERE outcome = 'tp')::numeric
                         / NULLIF(COUNT(*), 0) * 100, 2
                     ) AS win_rate
-                FROM signals
+                FROM msr_signals
                 WHERE outcome != 'active'
                 GROUP BY direction
                 ORDER BY direction
@@ -303,7 +304,7 @@ class SignalRepository:
                         / NULLIF(COUNT(*) FILTER (WHERE outcome = 'sl')::numeric * 4.42, 0),
                         2
                     ) AS profit_factor
-                FROM signals
+                FROM msr_signals
                 WHERE outcome != 'active'
             """))
             row = result.one()
@@ -324,7 +325,7 @@ class SignalRepository:
                             - COUNT(*) FILTER (WHERE outcome = 'sl')::numeric * 4.42,
                             2
                         ) AS daily_r
-                    FROM signals
+                    FROM msr_signals
                     WHERE outcome != 'active'
                       AND outcome_time >= NOW() - MAKE_INTERVAL(days => :days)
                     GROUP BY DATE(outcome_time AT TIME ZONE 'UTC')
@@ -358,17 +359,18 @@ class SignalRepository:
                     ROUND(PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY mfe_ratio)::numeric, 4) AS mfe_p50,
                     ROUND(PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY mfe_ratio)::numeric, 4) AS mfe_p75,
                     ROUND(PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY mfe_ratio)::numeric, 4) AS mfe_p90
-                FROM signals
+                FROM msr_signals
                 WHERE outcome != 'active'
                 GROUP BY outcome
             """))
             rows = result.all()
             return {row._mapping["outcome"]: dict(row._mapping) for row in rows}
 
-    def _row_to_signal(self, row: SignalTable) -> SignalRecord:
+    def _row_to_signal(self, row: MsrSignalTable) -> SignalRecord:
         """Convert database row to SignalRecord model."""
         return SignalRecord(
             id=row.id,
+            strategy=row.strategy or "msr_retest_capture",
             symbol=row.symbol,
             timeframe=row.timeframe,
             signal_time=row.signal_time,

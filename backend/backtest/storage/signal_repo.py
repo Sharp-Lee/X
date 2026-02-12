@@ -1,6 +1,6 @@
 """Backtest signal repository — PostgreSQL-backed, with run_id tracking.
 
-Uses the shared asyncpg pool. Writes to backtest_runs / backtest_signals
+Uses the shared asyncpg pool. Writes to backtest_runs / backtest_msr_signals
 tables, completely separate from the live signals table.
 """
 
@@ -97,6 +97,7 @@ class BacktestSignalRepo:
             (
                 s.id,
                 run_id,
+                s.strategy,
                 s.symbol,
                 s.timeframe,
                 s.signal_time,
@@ -118,12 +119,12 @@ class BacktestSignalRepo:
 
         async with self._pool.acquire() as conn:
             await conn.executemany(
-                """INSERT INTO backtest_signals
-                   (id, run_id, symbol, timeframe, signal_time, direction,
+                """INSERT INTO backtest_msr_signals
+                   (id, run_id, strategy, symbol, timeframe, signal_time, direction,
                     entry_price, tp_price, sl_price, atr_at_signal, max_atr,
                     streak_at_signal, mae_ratio, mfe_ratio, outcome,
                     outcome_time, outcome_price)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
                    ON CONFLICT (run_id, id) DO UPDATE SET
                     outcome=EXCLUDED.outcome,
                     outcome_time=EXCLUDED.outcome_time,
@@ -175,7 +176,7 @@ class BacktestSignalRepo:
                         / NULLIF(COUNT(*) FILTER (WHERE outcome IN ('tp','sl')), 0)
                         * 100, 1
                     ) AS win_rate
-                   FROM backtest_signals
+                   FROM backtest_msr_signals
                    WHERE run_id=$1
                    GROUP BY symbol, timeframe
                    ORDER BY symbol, timeframe""",

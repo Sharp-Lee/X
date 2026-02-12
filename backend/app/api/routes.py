@@ -12,6 +12,7 @@ from app.config import get_settings
 from app.models import Direction, Outcome
 from app.storage import SignalRepository
 from app.services import OrderService, OrderSide
+from core.strategy import list_strategies
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ class SignalResponse(BaseModel):
     """Signal response model."""
 
     id: str
+    strategy: str = "msr_retest_capture"
     symbol: str
     timeframe: str
     signal_time: datetime
@@ -72,6 +74,34 @@ def get_signal_repo() -> SignalRepository:
     return SignalRepository()
 
 
+def _signal_to_response(s) -> SignalResponse:
+    """Convert a SignalRecord to SignalResponse."""
+    return SignalResponse(
+        id=s.id,
+        strategy=getattr(s, "strategy", "msr_retest_capture"),
+        symbol=s.symbol,
+        timeframe=s.timeframe,
+        signal_time=s.signal_time,
+        direction=s.direction.name,
+        entry_price=float(s.entry_price),
+        tp_price=float(s.tp_price),
+        sl_price=float(s.sl_price),
+        atr_at_signal=float(s.atr_at_signal),
+        streak_at_signal=s.streak_at_signal,
+        mae_ratio=float(s.mae_ratio),
+        mfe_ratio=float(s.mfe_ratio),
+        outcome=s.outcome.value,
+        outcome_time=s.outcome_time,
+        outcome_price=float(s.outcome_price) if s.outcome_price else None,
+    )
+
+
+@router.get("/strategies")
+async def get_strategies():
+    """Get list of registered strategy names."""
+    return list_strategies()
+
+
 @router.get("/status", response_model=SystemStatus)
 async def get_status(request: Request):
     """Get system status."""
@@ -100,35 +130,18 @@ async def get_signals(
     symbol: Optional[str] = Query(None, description="Filter by symbol"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum signals to return"),
     outcome: Optional[str] = Query(None, description="Filter by outcome (active, tp, sl)"),
+    strategy: Optional[str] = Query(None, description="Filter by strategy name"),
 ):
     """Get recent signals."""
     repo = get_signal_repo()
     signals = await repo.get_recent(limit=limit, symbol=symbol)
 
-    # Filter by outcome if specified
     if outcome:
         signals = [s for s in signals if s.outcome.value == outcome]
+    if strategy:
+        signals = [s for s in signals if getattr(s, "strategy", "msr_retest_capture") == strategy]
 
-    return [
-        SignalResponse(
-            id=s.id,
-            symbol=s.symbol,
-            timeframe=s.timeframe,
-            signal_time=s.signal_time,
-            direction=s.direction.name,
-            entry_price=float(s.entry_price),
-            tp_price=float(s.tp_price),
-            sl_price=float(s.sl_price),
-            atr_at_signal=float(s.atr_at_signal),
-            streak_at_signal=s.streak_at_signal,
-            mae_ratio=float(s.mae_ratio),
-            mfe_ratio=float(s.mfe_ratio),
-            outcome=s.outcome.value,
-            outcome_time=s.outcome_time,
-            outcome_price=float(s.outcome_price) if s.outcome_price else None,
-        )
-        for s in signals
-    ]
+    return [_signal_to_response(s) for s in signals]
 
 
 @router.get("/signals/active", response_model=list[SignalResponse])
@@ -139,26 +152,7 @@ async def get_active_signals(
     repo = get_signal_repo()
     signals = await repo.get_active(symbol=symbol)
 
-    return [
-        SignalResponse(
-            id=s.id,
-            symbol=s.symbol,
-            timeframe=s.timeframe,
-            signal_time=s.signal_time,
-            direction=s.direction.name,
-            entry_price=float(s.entry_price),
-            tp_price=float(s.tp_price),
-            sl_price=float(s.sl_price),
-            atr_at_signal=float(s.atr_at_signal),
-            streak_at_signal=s.streak_at_signal,
-            mae_ratio=float(s.mae_ratio),
-            mfe_ratio=float(s.mfe_ratio),
-            outcome=s.outcome.value,
-            outcome_time=s.outcome_time,
-            outcome_price=float(s.outcome_price) if s.outcome_price else None,
-        )
-        for s in signals
-    ]
+    return [_signal_to_response(s) for s in signals]
 
 
 @router.get("/signals/{signal_id}", response_model=SignalResponse)
@@ -170,23 +164,7 @@ async def get_signal(signal_id: str):
     if signal is None:
         raise HTTPException(status_code=404, detail="Signal not found")
 
-    return SignalResponse(
-        id=signal.id,
-        symbol=signal.symbol,
-        timeframe=signal.timeframe,
-        signal_time=signal.signal_time,
-        direction=signal.direction.name,
-        entry_price=float(signal.entry_price),
-        tp_price=float(signal.tp_price),
-        sl_price=float(signal.sl_price),
-        atr_at_signal=float(signal.atr_at_signal),
-        streak_at_signal=signal.streak_at_signal,
-        mae_ratio=float(signal.mae_ratio),
-        mfe_ratio=float(signal.mfe_ratio),
-        outcome=signal.outcome.value,
-        outcome_time=signal.outcome_time,
-        outcome_price=float(signal.outcome_price) if signal.outcome_price else None,
-    )
+    return _signal_to_response(signal)
 
 
 @router.post("/order", response_model=OrderResponse)

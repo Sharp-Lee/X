@@ -16,7 +16,7 @@ from core.models.config import StrategyConfig
 from core.models.converters import fast_to_kline, kline_to_fast
 from core.models.kline import Kline, KlineBuffer
 from core.models.signal import Outcome, SignalRecord
-from core.signal_generator import SignalGenerator
+from core.strategy import create_strategy
 
 from backtest.outcome import OutcomeTracker
 
@@ -49,6 +49,7 @@ class BacktestEngine:
         timeframes: list[str],
         strategy: StrategyConfig,
         signal_start_time: datetime | None = None,
+        strategy_name: str = "msr_retest_capture",
     ):
         self.symbol = symbol
         self.timeframes = timeframes
@@ -59,13 +60,13 @@ class BacktestEngine:
         aggregated_tfs = [tf for tf in timeframes if tf != "1m"]
         self._aggregator = KlineAggregator(target_timeframes=aggregated_tfs)
 
-        # Per-timeframe: KlineBuffer + SignalGenerator
+        # Per-timeframe: KlineBuffer + strategy instance
         self._buffers: dict[str, KlineBuffer] = {}
-        self._generators: dict[str, SignalGenerator] = {}
+        self._generators: dict[str, object] = {}
         for tf in timeframes:
             self._buffers[tf] = KlineBuffer(symbol=symbol, timeframe=tf, max_size=200)
             # No persistence callbacks — backtesting is in-memory only
-            self._generators[tf] = SignalGenerator(config=strategy)
+            self._generators[tf] = create_strategy(strategy_name, config=strategy)
 
         # Outcome tracker
         self._outcome_tracker = OutcomeTracker(

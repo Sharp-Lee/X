@@ -77,6 +77,7 @@ class TradingConfig(BaseModel):
     """Top-level trading.yaml configuration."""
 
     portfolio: str = "B"
+    strategy_name: str = "msr_retest_capture"  # Strategy plugin name
     strategies: list[StrategyEntry] = []
     accounts: list[AccountConfig] = []
 

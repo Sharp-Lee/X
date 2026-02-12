@@ -93,6 +93,7 @@ class FastSignal:
     entry_price: float
     tp_price: float
     sl_price: float
+    strategy: str = "msr_retest_capture"  # Strategy identifier
     atr_at_signal: float = 0.0  # ATR value when signal was generated
     max_atr: float = 0.0  # Maximum ATR during signal lifetime
     streak_at_signal: int = 0

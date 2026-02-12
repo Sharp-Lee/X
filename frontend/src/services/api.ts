@@ -6,6 +6,7 @@ const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
 
 export interface Signal {
   id: string;
+  strategy?: string;
   symbol: string;
   timeframe: string;
   signal_time: string;
@@ -168,15 +169,21 @@ export const api = {
     return fetchJson(`${API_BASE}/status`);
   },
 
+  async getStrategies(): Promise<string[]> {
+    return fetchJson(`${API_BASE}/strategies`);
+  },
+
   async getSignals(params?: {
     symbol?: string;
     limit?: number;
     outcome?: string;
+    strategy?: string;
   }): Promise<Signal[]> {
     const searchParams = new URLSearchParams();
     if (params?.symbol) searchParams.set('symbol', params.symbol);
     if (params?.limit) searchParams.set('limit', params.limit.toString());
     if (params?.outcome) searchParams.set('outcome', params.outcome);
+    if (params?.strategy) searchParams.set('strategy', params.strategy);
 
     const query = searchParams.toString();
     return fetchJson(`${API_BASE}/signals${query ? `?${query}` : ''}`);

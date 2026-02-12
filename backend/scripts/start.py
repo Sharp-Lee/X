@@ -183,7 +183,7 @@ async def clear_database():
 
     async with engine.begin() as conn:
         # 清空所有表
-        result = await conn.execute(text('DELETE FROM signals'))
+        result = await conn.execute(text('DELETE FROM msr_signals'))
         print(f"  删除了 {result.rowcount} 条信号记录")
 
         result = await conn.execute(text('DELETE FROM klines'))

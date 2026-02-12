@@ -36,6 +36,7 @@ class BacktestConfig:
     start_date: datetime
     end_date: datetime
     strategy: StrategyConfig
+    strategy_name: str = "msr_retest_capture"
 
 
 def generate_run_id(config: BacktestConfig) -> str:
@@ -175,6 +176,7 @@ class BacktestRunner:
             timeframes=self.config.timeframes,
             strategy=self.config.strategy,
             signal_start_time=self.config.start_date,
+            strategy_name=self.config.strategy_name,
         )
         await engine.init()
 
