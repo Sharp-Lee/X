@@ -150,6 +150,7 @@ class OrderService:
         side: OrderSide,
         amount: Decimal,
         reduce_only: bool = False,
+        position_side: str | None = None,
     ) -> dict:
         """
         Place a market order.
@@ -159,6 +160,7 @@ class OrderService:
             side: Buy or sell
             amount: Order quantity
             reduce_only: If True, only reduces existing position
+            position_side: "LONG" or "SHORT" for hedge mode
 
         Returns:
             Order response
@@ -180,8 +182,10 @@ class OrderService:
         params = {}
         if reduce_only:
             params["reduceOnly"] = True
+        if position_side:
+            params["positionSide"] = position_side
 
-        logger.info(f"Placing {side.value} market order: {symbol} qty={amount}")
+        logger.info(f"Placing {side.value} market order: {symbol} qty={amount} positionSide={position_side}")
         order = await self._exchange.create_order(
             symbol=symbol,
             type="market",
@@ -242,6 +246,7 @@ class OrderService:
         side: OrderSide,
         amount: Decimal,
         stop_price: Decimal,
+        position_side: str | None = None,
     ) -> dict:
         """
         Place a stop-loss market order.
@@ -251,6 +256,7 @@ class OrderService:
             side: Buy (for short position SL) or Sell (for long position SL)
             amount: Order quantity
             stop_price: Stop trigger price
+            position_side: "LONG" or "SHORT" for hedge mode
 
         Returns:
             Order response
@@ -258,18 +264,23 @@ class OrderService:
         if not self._exchange:
             await self.connect()
 
+        params = {
+            "stopPrice": float(stop_price),
+        }
+        if position_side:
+            params["positionSide"] = position_side
+        else:
+            params["reduceOnly"] = True
+
         logger.info(
-            f"Placing {side.value} stop-loss: {symbol} qty={amount} stop={stop_price}"
+            f"Placing {side.value} stop-loss: {symbol} qty={amount} stop={stop_price} positionSide={position_side}"
         )
         order = await self._exchange.create_order(
             symbol=symbol,
             type="stop_market",
             side=side.value,
             amount=float(amount),
-            params={
-                "stopPrice": float(stop_price),
-                "reduceOnly": True,
-            },
+            params=params,
         )
 
         logger.info(f"Stop-loss placed: {order['id']}")
@@ -281,6 +292,7 @@ class OrderService:
         side: OrderSide,
         amount: Decimal,
         tp_price: Decimal,
+        position_side: str | None = None,
     ) -> dict:
         """
         Place a take-profit market order.
@@ -290,6 +302,7 @@ class OrderService:
             side: Buy (for short position TP) or Sell (for long position TP)
             amount: Order quantity
             tp_price: Take profit trigger price
+            position_side: "LONG" or "SHORT" for hedge mode
 
         Returns:
             Order response
@@ -297,18 +310,23 @@ class OrderService:
         if not self._exchange:
             await self.connect()
 
+        params = {
+            "stopPrice": float(tp_price),
+        }
+        if position_side:
+            params["positionSide"] = position_side
+        else:
+            params["reduceOnly"] = True
+
         logger.info(
-            f"Placing {side.value} take-profit: {symbol} qty={amount} tp={tp_price}"
+            f"Placing {side.value} take-profit: {symbol} qty={amount} tp={tp_price} positionSide={position_side}"
         )
         order = await self._exchange.create_order(
             symbol=symbol,
             type="take_profit_market",
             side=side.value,
             amount=float(amount),
-            params={
-                "stopPrice": float(tp_price),
-                "reduceOnly": True,
-            },
+            params=params,
         )
 
         logger.info(f"Take-profit placed: {order['id']}")
@@ -334,13 +352,15 @@ class OrderService:
         if not self._exchange:
             await self.connect()
 
-        # Determine entry side
+        # Determine entry side and position side (for hedge mode)
         if signal.direction == Direction.LONG:
             entry_side = OrderSide.BUY
             exit_side = OrderSide.SELL
+            position_side = "LONG"
         else:
             entry_side = OrderSide.SELL
             exit_side = OrderSide.BUY
+            position_side = "SHORT"
 
         result = {"signal_id": signal.id, "orders": []}
 
@@ -349,6 +369,7 @@ class OrderService:
             symbol=signal.symbol,
             side=entry_side,
             amount=quantity,
+            position_side=position_side,
         )
         result["orders"].append({"type": "entry", "order": entry_order})
 
@@ -359,6 +380,7 @@ class OrderService:
                 side=exit_side,
                 amount=quantity,
                 stop_price=signal.sl_price,
+                position_side=position_side,
             )
             result["orders"].append({"type": "stop_loss", "order": sl_order})
 
@@ -368,6 +390,7 @@ class OrderService:
                 side=exit_side,
                 amount=quantity,
                 tp_price=signal.tp_price,
+                position_side=position_side,
             )
             result["orders"].append({"type": "take_profit", "order": tp_order})
 
@@ -431,6 +454,7 @@ class OrderService:
 
         # Close position with opposite market order
         side = OrderSide.SELL if position["side"] == "long" else OrderSide.BUY
+        position_side = "LONG" if position["side"] == "long" else "SHORT"
         amount = Decimal(str(abs(position["contracts"])))
 
         logger.info(f"Closing position: {symbol} {position['side']} qty={amount}")
@@ -438,7 +462,7 @@ class OrderService:
             symbol=symbol,
             side=side,
             amount=amount,
-            reduce_only=True,
+            position_side=position_side,
         )
 
         return order
